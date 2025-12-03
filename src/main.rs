@@ -30,6 +30,7 @@ enum GameState {
     Paused,
     Settings,
     RulesEditor,
+    LevelEditor,
     RebindingControls,
     PresetsMenu,
     Help,
@@ -96,6 +97,13 @@ async fn main() {
     let mut level_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
     let mut scene = make_scene(&assets, &rules, level, &mut level_rng);
     let mut editor_level_data: Option<crate::generator::CustomLevel> = None;
+    let mut editor_tool_index: i32 = 1; // 0: Player, 1: Platform, 2: Enemy, 3: Collectible, 4: Eraser
+    let mut editor_player_index: i32 = 0;
+    let mut editor_platform_index: i32 = 0;
+    let mut editor_enemy_index: i32 = 0;
+    let mut editor_collectible_index: i32 = 0;
+    let mut editor_camera: Vec2 = Vec2::ZERO;
+    let mut editor_preview_scale: f32 = 1.0;
 
     loop {
         let frame_start = std::time::Instant::now();
@@ -107,10 +115,10 @@ async fn main() {
                 let down = is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S);
 
                 if up {
-                    menu_index = (menu_index - 1).rem_euclid(6);
+                    menu_index = (menu_index - 1).rem_euclid(7);
                 }
                 if down {
-                    menu_index = (menu_index + 1).rem_euclid(6);
+                    menu_index = (menu_index + 1).rem_euclid(7);
                 }
 
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
@@ -124,13 +132,23 @@ async fn main() {
                             state = GameState::Playing;
                         }
                         1 => {
+                            // Custom Levels: play using custom mode
+                            level = 1;
+                            total_collected = 0;
+                            rules.mode = "custom".to_string();
+                            level_rng =
+                                StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
+                            scene = make_scene(&assets, &rules, level, &mut level_rng);
+                            state = GameState::Playing;
+                        }
+                        2 => {
                             // Level Editor
                             editor_level = 1;
                             editor_level_data =
                                 crate::generator::load_custom_level(editor_level, &rules);
-                            state = GameState::RulesEditor; // temporary placeholder
+                            state = GameState::LevelEditor;
                         }
-                        2 => {
+                        3 => {
                             // Play Cartridge
                             cartridge_files = list_run_cartridges().unwrap_or_else(|e| {
                                 eprintln!("{e}");
@@ -139,14 +157,14 @@ async fn main() {
                             cartridge_index = 0;
                             state = GameState::CartridgeMenu;
                         }
-                        3 => {
+                        4 => {
                             settings_return_to = GameState::MainMenu;
                             state = GameState::Settings;
                         }
-                        4 => {
+                        5 => {
                             state = GameState::Help;
                         }
-                        5 => {
+                        6 => {
                             break;
                         }
                         _ => {}
@@ -157,6 +175,26 @@ async fn main() {
                 if is_key_pressed(KeyCode::Escape) {
                     state = GameState::Paused;
                 } else {
+                    // Edit current level while in custom mode
+                    if rules.mode.to_lowercase() == "custom"
+                        && is_key_pressed(KeyCode::F2)
+                    {
+                        editor_level = level;
+                        editor_level_data =
+                            crate::generator::load_custom_level(editor_level, &rules);
+                        if let Some(player_pos) = scene.player_position() {
+                            let sw = screen_width();
+                            let sh = screen_height();
+                            editor_camera = vec2(
+                                player_pos.x - sw / 2.0,
+                                player_pos.y - sh / 2.0,
+                            );
+                        } else {
+                            editor_camera = Vec2::ZERO;
+                        }
+                        state = GameState::LevelEditor;
+                    }
+
                     if is_key_pressed(KeyCode::R) {
                         scene = make_scene(&assets, &rules, level, &mut level_rng);
                     }
@@ -516,6 +554,267 @@ async fn main() {
                     state = GameState::Settings;
                 }
             }
+            GameState::LevelEditor => {
+                // Ensure we have some data to edit
+                if editor_level_data.is_none() {
+                    editor_level_data = Some(crate::generator::CustomLevel {
+                        player_start: None,
+                        platforms: Vec::new(),
+                        enemies: Vec::new(),
+                        collectibles: Vec::new(),
+                    });
+                }
+
+                let up = is_key_down(KeyCode::W) || is_key_down(KeyCode::Up);
+                let down = is_key_down(KeyCode::S) || is_key_down(KeyCode::Down);
+                let left = is_key_down(KeyCode::A) || is_key_down(KeyCode::Left);
+                let right = is_key_down(KeyCode::D) || is_key_down(KeyCode::Right);
+
+                let pan_speed = 400.0;
+                if left {
+                    editor_camera.x -= pan_speed * dt;
+                }
+                if right {
+                    editor_camera.x += pan_speed * dt;
+                }
+                if up {
+                    editor_camera.y -= pan_speed * dt;
+                }
+                if down {
+                    editor_camera.y += pan_speed * dt;
+                }
+
+                // Scroll wheel adjusts preview scale
+                let (_wheel_x, wheel_y) = mouse_wheel();
+                if wheel_y.abs() > f32::EPSILON {
+                    editor_preview_scale =
+                        (editor_preview_scale + wheel_y * 0.1).clamp(0.25, 4.0);
+                }
+
+                // Cycle tools with Q/E
+                if is_key_pressed(KeyCode::Q) {
+                    editor_tool_index = (editor_tool_index - 1).rem_euclid(5);
+                }
+                if is_key_pressed(KeyCode::E) {
+                    editor_tool_index = (editor_tool_index + 1).rem_euclid(5);
+                }
+
+                // Change level with Z/X (save current, then load new)
+                if is_key_pressed(KeyCode::Z) && editor_level > 1 {
+                    if let Some(ref data) = editor_level_data {
+                        if let Err(e) =
+                            crate::generator::save_custom_level(editor_level, &rules, data)
+                        {
+                            eprintln!("{e}");
+                        }
+                    }
+                    editor_level = editor_level.saturating_sub(1).max(1);
+                    editor_level_data =
+                        crate::generator::load_custom_level(editor_level, &rules);
+                }
+                if is_key_pressed(KeyCode::X) {
+                    if let Some(ref data) = editor_level_data {
+                        if let Err(e) =
+                            crate::generator::save_custom_level(editor_level, &rules, data)
+                        {
+                            eprintln!("{e}");
+                        }
+                    }
+                    editor_level = editor_level.saturating_add(1);
+                    editor_level_data =
+                        crate::generator::load_custom_level(editor_level, &rules);
+                }
+
+                // Sprite selection indices
+                let player_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Player);
+                let platform_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Platform);
+                let enemy_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Enemy);
+                let collectible_sprites =
+                    assets.sprites_of_kind(crate::assets::SpriteKind::Collectible);
+
+                if is_key_pressed(KeyCode::Z) || is_key_pressed(KeyCode::X) {
+                    // already handled for level switching above
+                }
+
+                // Use A/D style keys for sprite cycling per category
+                if is_key_pressed(KeyCode::Comma) {
+                    match editor_tool_index {
+                        0 => {
+                            if !player_sprites.is_empty() {
+                                editor_player_index =
+                                    (editor_player_index - 1).rem_euclid(player_sprites.len() as i32);
+                            }
+                        }
+                        1 => {
+                            if !platform_sprites.is_empty() {
+                                editor_platform_index =
+                                    (editor_platform_index - 1).rem_euclid(platform_sprites.len() as i32);
+                            }
+                        }
+                        2 => {
+                            if !enemy_sprites.is_empty() {
+                                editor_enemy_index =
+                                    (editor_enemy_index - 1).rem_euclid(enemy_sprites.len() as i32);
+                            }
+                        }
+                        3 => {
+                            if !collectible_sprites.is_empty() {
+                                editor_collectible_index =
+                                    (editor_collectible_index - 1)
+                                        .rem_euclid(collectible_sprites.len() as i32);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if is_key_pressed(KeyCode::Period) {
+                    match editor_tool_index {
+                        0 => {
+                            if !player_sprites.is_empty() {
+                                editor_player_index =
+                                    (editor_player_index + 1).rem_euclid(player_sprites.len() as i32);
+                            }
+                        }
+                        1 => {
+                            if !platform_sprites.is_empty() {
+                                editor_platform_index =
+                                    (editor_platform_index + 1).rem_euclid(platform_sprites.len() as i32);
+                            }
+                        }
+                        2 => {
+                            if !enemy_sprites.is_empty() {
+                                editor_enemy_index =
+                                    (editor_enemy_index + 1).rem_euclid(enemy_sprites.len() as i32);
+                            }
+                        }
+                        3 => {
+                            if !collectible_sprites.is_empty() {
+                                editor_collectible_index =
+                                    (editor_collectible_index + 1)
+                                        .rem_euclid(collectible_sprites.len() as i32);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Save current level with S
+                if is_key_pressed(KeyCode::S) {
+                    if let Some(ref data) = editor_level_data {
+                        if let Err(e) =
+                            crate::generator::save_custom_level(editor_level, &rules, data)
+                        {
+                            eprintln!("{e}");
+                        }
+                    }
+                }
+
+                // Place / remove items with mouse (snapped to grid)
+                if let Some(ref mut data) = editor_level_data {
+                    let mouse = mouse_position();
+                    let grid = 64.0f32;
+                    let raw_pos = vec2(mouse.0 + editor_camera.x, mouse.1 + editor_camera.y);
+                    let world_pos = vec2(
+                        (raw_pos.x / grid).round() * grid,
+                        (raw_pos.y / grid).round() * grid,
+                    );
+
+                    if is_mouse_button_pressed(MouseButton::Left) {
+                        match editor_tool_index {
+                            0 => {
+                                // Player
+                                if let Some(sprite) =
+                                    player_sprites.get(editor_player_index.rem_euclid(
+                                        player_sprites.len().max(1) as i32,
+                                    ) as usize)
+                                {
+                                    data.player_start = Some(crate::generator::CustomLevelEntity {
+                                        sprite: sprite.name.clone(),
+                                        x: world_pos.x,
+                                        y: world_pos.y,
+                                    });
+                                }
+                            }
+                            1 => {
+                                // Platform
+                                if !platform_sprites.is_empty() {
+                                    let idx = editor_platform_index
+                                        .rem_euclid(platform_sprites.len() as i32)
+                                        as usize;
+                                    let sprite = platform_sprites[idx];
+                                    data.platforms.push(
+                                        crate::generator::CustomLevelEntity {
+                                            sprite: sprite.name.clone(),
+                                            x: world_pos.x,
+                                            y: world_pos.y,
+                                        },
+                                    );
+                                }
+                            }
+                            2 => {
+                                // Enemy
+                                if !enemy_sprites.is_empty() {
+                                    let idx = editor_enemy_index
+                                        .rem_euclid(enemy_sprites.len() as i32)
+                                        as usize;
+                                    let sprite = enemy_sprites[idx];
+                                    data.enemies.push(
+                                        crate::generator::CustomLevelEntity {
+                                            sprite: sprite.name.clone(),
+                                            x: world_pos.x,
+                                            y: world_pos.y,
+                                        },
+                                    );
+                                }
+                            }
+                            3 => {
+                                // Collectible
+                                if !collectible_sprites.is_empty() {
+                                    let idx = editor_collectible_index
+                                        .rem_euclid(collectible_sprites.len() as i32)
+                                        as usize;
+                                    let sprite = collectible_sprites[idx];
+                                    data.collectibles.push(
+                                        crate::generator::CustomLevelCollectible {
+                                            sprite: sprite.name.clone(),
+                                            x: world_pos.x,
+                                            y: world_pos.y,
+                                            value: rules.collectible_value,
+                                            health: rules.collectible_health_value,
+                                        },
+                                    );
+                                }
+                            }
+                            4 => {
+                                // Eraser: remove nearest from any category
+                                remove_nearest_in_level(data, world_pos, 32.0);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if is_mouse_button_pressed(MouseButton::Right) {
+                        // Remove nearest in current category only
+                        remove_nearest_in_level_category(
+                            data,
+                            world_pos,
+                            32.0,
+                            editor_tool_index,
+                        );
+                    }
+                }
+
+                if is_key_pressed(KeyCode::Escape) {
+                    if let Some(ref data) = editor_level_data {
+                        if let Err(e) =
+                            crate::generator::save_custom_level(editor_level, &rules, data)
+                        {
+                            eprintln!("{e}");
+                        }
+                    }
+                    state = GameState::MainMenu;
+                }
+            }
             GameState::CartridgeMenu => {
                 let up = is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W);
                 let down = is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S);
@@ -620,129 +919,367 @@ async fn main() {
 
         clear_background(BLACK);
 
-        // World camera following the player horizontally and vertically
-        let sw = screen_width();
-        let sh = screen_height();
-        let player_pos = scene
-            .player_position()
-            .unwrap_or(vec2(scene.world_width / 2.0, sh / 2.0));
-        let half_w = sw / 2.0;
-        let half_h = sh / 2.0;
-        let min_cam_x = half_w;
-        let max_cam_x = (scene.world_width - half_w).max(min_cam_x);
-        let min_cam_y = half_h;
-        let world_h = scene.world_height.max(sh);
-        let max_cam_y = (world_h - half_h).max(min_cam_y);
-        let cam_x = player_pos.x.clamp(min_cam_x, max_cam_x);
-        let cam_y = player_pos.y.clamp(min_cam_y, max_cam_y);
+        if let GameState::LevelEditor = state {
+            // Simple 2D editor draw with default camera
+            set_default_camera();
 
-        // Parallax background: move slower than the world (0.5x), but keep within bounds
-        let parallax_cam_x = half_w + (cam_x - half_w) * 0.5;
-        let parallax_cam_y = half_h + (cam_y - half_h) * 0.5;
-
-        let parallax_camera = Camera2D {
-            target: vec2(parallax_cam_x, parallax_cam_y),
-            zoom: vec2(2.0 / sw, 2.0 / sh),
-            ..Default::default()
-        };
-        set_camera(&parallax_camera);
-        scene.draw_background();
-
-        // World camera
-        let camera = Camera2D {
-            target: vec2(cam_x, cam_y),
-            zoom: vec2(2.0 / sw, 2.0 / sh),
-            ..Default::default()
-        };
-        set_camera(&camera);
-        scene.draw_world();
-        if rules.debug_overlay {
-            scene.debug_draw();
-        }
-
-        set_default_camera();
-
-        let hud_text = format!(
-            "Level: {} | HP: {}/{} | Progress: {}/{}",
-            level,
-            scene.player_health,
-            scene.player_max_health,
-            total_collected,
-            rules.collectibles_for_level_up
-        );
-
-        let controls_hint = match rules.control_scheme.to_lowercase().as_str() {
-            "wasd" => "Controls: A/D move, Space/W jump, R to regenerate",
-            "arrows" => "Controls: Left/Right move, Up jump, R to regenerate",
-            "custom" => "Controls: custom bindings (see rules.json), R to regenerate",
-            _ => "Controls: A/D or arrows move, Space jump, R to regenerate",
-        };
-        draw_text(
-            controls_hint,
-            16.0,
-            24.0,
-            24.0,
-            YELLOW,
-        );
-
-        draw_text(
-            &hud_text,
-            16.0,
-            52.0,
-            24.0,
-            YELLOW,
-        );
-
-        // Boss / event level label
-        let is_boss_level = rules.boss_level_interval > 0
-            && level > 0
-            && level % rules.boss_level_interval == 0;
-        if is_boss_level {
-            let label = match rules.boss_mode.to_lowercase().as_str() {
-                "collect_fest" | "collectfest" | "collect" => "EVENT: COLLECT FEST",
-                "boss_enemy" | "boss" => "BOSS LEVEL",
-                _ => "EVENT LEVEL",
-            };
+            // Draw grid
             let sw = screen_width();
-            draw_text(
-                label,
-                sw * 0.5 - 140.0,
-                32.0,
-                28.0,
-                ORANGE,
-            );
-        }
+            let sh = screen_height();
+            let grid = 64.0f32;
+            let start_x = (editor_camera.x / grid).floor() * grid - editor_camera.x;
+            let start_y = (editor_camera.y / grid).floor() * grid - editor_camera.y;
 
-        if rules.show_fps {
-            let fps_text = format!("FPS: {}", get_fps());
-            draw_text(
-                &fps_text,
-                screen_width() - 140.0,
-                24.0,
-                20.0,
-                GREEN,
-            );
-        }
+            let vertical_lines = (sw / grid).ceil() as i32 + 2;
+            let horizontal_lines = (sh / grid).ceil() as i32 + 2;
 
-        if rules.debug_overlay {
-            let dbg = format!("Seed: {} | Level: {}", seed, level);
+            for i in 0..vertical_lines {
+                let x = start_x + i as f32 * grid;
+                draw_line(x, 0.0, x, sh, 1.0, Color::new(0.2, 0.2, 0.2, 0.7));
+            }
+            for i in 0..horizontal_lines {
+                let y = start_y + i as f32 * grid;
+                draw_line(0.0, y, sw, y, 1.0, Color::new(0.2, 0.2, 0.2, 0.7));
+            }
+
+            // Draw level entities from editor_level_data
+            if let Some(ref data) = editor_level_data {
+                let draw_entity = |sprite_name: &str, x: f32, y: f32| {
+                    if let Some(sprite) = assets
+                        .sprite_by_kind_and_name(crate::assets::SpriteKind::Platform, sprite_name)
+                    {
+                        let tex = &sprite.texture;
+                        let dest_size =
+                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
+                        let sx = x - editor_camera.x - dest_size.x / 2.0;
+                        let sy = y - editor_camera.y - dest_size.y / 2.0;
+                        draw_texture_ex(
+                            tex,
+                            sx,
+                            sy,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                };
+
+                // Platforms
+                for p in &data.platforms {
+                    if let Some(sprite) = assets.sprite_by_kind_and_name(
+                        crate::assets::SpriteKind::Platform,
+                        &p.sprite,
+                    ) {
+                        let tex = &sprite.texture;
+                        let dest_size =
+                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
+                        let sx = p.x - editor_camera.x - dest_size.x / 2.0;
+                        let sy = p.y - editor_camera.y - dest_size.y / 2.0;
+                        draw_texture_ex(
+                            tex,
+                            sx,
+                            sy,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+
+                // Enemies
+                for e in &data.enemies {
+                    if let Some(sprite) = assets.sprite_by_kind_and_name(
+                        crate::assets::SpriteKind::Enemy,
+                        &e.sprite,
+                    ) {
+                        let tex = &sprite.texture;
+                        let dest_size =
+                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
+                        let sx = e.x - editor_camera.x - dest_size.x / 2.0;
+                        let sy = e.y - editor_camera.y - dest_size.y / 2.0;
+                        draw_texture_ex(
+                            tex,
+                            sx,
+                            sy,
+                            RED,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+
+                // Collectibles
+                for c in &data.collectibles {
+                    if let Some(sprite) = assets.sprite_by_kind_and_name(
+                        crate::assets::SpriteKind::Collectible,
+                        &c.sprite,
+                    ) {
+                        let tex = &sprite.texture;
+                        let dest_size =
+                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
+                        let sx = c.x - editor_camera.x - dest_size.x / 2.0;
+                        let sy = c.y - editor_camera.y - dest_size.y / 2.0;
+                        draw_texture_ex(
+                            tex,
+                            sx,
+                            sy,
+                            BLUE,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+
+                // Player start
+                if let Some(ref start) = data.player_start {
+                    if let Some(sprite) = assets.sprite_by_kind_and_name(
+                        crate::assets::SpriteKind::Player,
+                        &start.sprite,
+                    ) {
+                        let tex = &sprite.texture;
+                        let dest_size =
+                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
+                        let sx = start.x - editor_camera.x - dest_size.x / 2.0;
+                        let sy = start.y - editor_camera.y - dest_size.y / 2.0;
+                        draw_texture_ex(
+                            tex,
+                            sx,
+                            sy,
+                            GREEN,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+            }
+
+            // HUD for editor
+            let tool_name = match editor_tool_index {
+                0 => "Player",
+                1 => "Platform",
+                2 => "Enemy",
+                3 => "Collectible",
+                4 => "Eraser",
+                _ => "Unknown",
+            };
+            let hud = format!(
+                "Level Editor - Level {} | Tool: {} | Scale: {:.2}x",
+                editor_level, tool_name, editor_preview_scale
+            );
+            draw_text(&hud, 16.0, 28.0, 30.0, YELLOW);
+            let hint = "Move: WASD/arrows  | Q/E: tool  | ,/. : sprite  | Mouse wheel: preview size  | Z/X: level  | LMB: place  | RMB: erase  | S: save  | Esc: back";
+            draw_text(hint, 16.0, 64.0, 20.0, GRAY);
+
+            // Preview sprite under mouse
+            if let Some(ref data) = editor_level_data {
+                let mouse = mouse_position();
+                let preview_pos = vec2(mouse.0, mouse.1);
+                let color = match editor_tool_index {
+                    0 => GREEN,
+                    1 => WHITE,
+                    2 => RED,
+                    3 => BLUE,
+                    _ => GRAY,
+                };
+
+                let draw_preview = |tex: &Texture2D| {
+                    let base_w = tex.width();
+                    let base_h = tex.height();
+                    let scale = rules.sprite_scale * editor_preview_scale;
+                    let dest_size = vec2(base_w * scale, base_h * scale);
+                    draw_texture_ex(
+                        tex,
+                        preview_pos.x - dest_size.x / 2.0,
+                        preview_pos.y - dest_size.y / 2.0,
+                        color,
+                        DrawTextureParams {
+                            dest_size: Some(dest_size),
+                            ..Default::default()
+                        },
+                    );
+                };
+
+                match editor_tool_index {
+                    0 => {
+                        if let Some(sprite) = assets
+                            .sprites_of_kind(crate::assets::SpriteKind::Player)
+                            .get(editor_player_index.rem_euclid(
+                                assets
+                                    .sprites_of_kind(crate::assets::SpriteKind::Player)
+                                    .len()
+                                    .max(1) as i32,
+                            ) as usize)
+                        {
+                            draw_preview(&sprite.texture);
+                        }
+                    }
+                    1 => {
+                        let list = assets.sprites_of_kind(crate::assets::SpriteKind::Platform);
+                        if !list.is_empty() {
+                            let idx = editor_platform_index.rem_euclid(list.len() as i32) as usize;
+                            let sprite = list[idx];
+                            draw_preview(&sprite.texture);
+                        }
+                    }
+                    2 => {
+                        let list = assets.sprites_of_kind(crate::assets::SpriteKind::Enemy);
+                        if !list.is_empty() {
+                            let idx = editor_enemy_index.rem_euclid(list.len() as i32) as usize;
+                            let sprite = list[idx];
+                            draw_preview(&sprite.texture);
+                        }
+                    }
+                    3 => {
+                        let list =
+                            assets.sprites_of_kind(crate::assets::SpriteKind::Collectible);
+                        if !list.is_empty() {
+                            let idx =
+                                editor_collectible_index.rem_euclid(list.len() as i32) as usize;
+                            let sprite = list[idx];
+                            draw_preview(&sprite.texture);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            // Normal game rendering
+            // World camera following the player horizontally and vertically
+            let sw = screen_width();
+            let sh = screen_height();
+            let player_pos = scene
+                .player_position()
+                .unwrap_or(vec2(scene.world_width / 2.0, sh / 2.0));
+            let half_w = sw / 2.0;
+            let half_h = sh / 2.0;
+            let min_cam_x = half_w;
+            let max_cam_x = (scene.world_width - half_w).max(min_cam_x);
+            let min_cam_y = half_h;
+            let world_h = scene.world_height.max(sh);
+            let max_cam_y = (world_h - half_h).max(min_cam_y);
+            let cam_x = player_pos.x.clamp(min_cam_x, max_cam_x);
+            let cam_y = player_pos.y.clamp(min_cam_y, max_cam_y);
+
+            // Parallax background: move slower than the world (0.5x), but keep within bounds
+            let parallax_cam_x = half_w + (cam_x - half_w) * 0.5;
+            let parallax_cam_y = half_h + (cam_y - half_h) * 0.5;
+
+            let parallax_camera = Camera2D {
+                target: vec2(parallax_cam_x, parallax_cam_y),
+                zoom: vec2(2.0 / sw, 2.0 / sh),
+                ..Default::default()
+            };
+            set_camera(&parallax_camera);
+            scene.draw_background();
+
+            // World camera
+            let camera = Camera2D {
+                target: vec2(cam_x, cam_y),
+                zoom: vec2(2.0 / sw, 2.0 / sh),
+                ..Default::default()
+            };
+            set_camera(&camera);
+            scene.draw_world();
+            if rules.debug_overlay {
+                scene.debug_draw();
+            }
+
+            set_default_camera();
+
+            let hud_text = format!(
+                "Level: {} | HP: {}/{} | Progress: {}/{}",
+                level,
+                scene.player_health,
+                scene.player_max_health,
+                total_collected,
+                rules.collectibles_for_level_up
+            );
+
+            let controls_hint = match rules.control_scheme.to_lowercase().as_str() {
+                "wasd" => "Controls: A/D move, Space/W jump, R to regenerate",
+                "arrows" => "Controls: Left/Right move, Up jump, R to regenerate",
+                "custom" => "Controls: custom bindings (see rules.json), R to regenerate",
+                _ => "Controls: A/D or arrows move, Space jump, R to regenerate",
+            };
             draw_text(
-                &dbg,
+                controls_hint,
                 16.0,
-                screen_height() - 16.0,
-                18.0,
-                GREEN,
+                24.0,
+                24.0,
+                YELLOW,
             );
+
+            draw_text(
+                &hud_text,
+                16.0,
+                52.0,
+                24.0,
+                YELLOW,
+            );
+
+            // Boss / event level label
+            let is_boss_level = rules.boss_level_interval > 0
+                && level > 0
+                && level % rules.boss_level_interval == 0;
+            if is_boss_level {
+                let label = match rules.boss_mode.to_lowercase().as_str() {
+                    "collect_fest" | "collectfest" | "collect" => "EVENT: COLLECT FEST",
+                    "boss_enemy" | "boss" => "BOSS LEVEL",
+                    _ => "EVENT LEVEL",
+                };
+                let sw = screen_width();
+                draw_text(
+                    label,
+                    sw * 0.5 - 140.0,
+                    32.0,
+                    28.0,
+                    ORANGE,
+                );
+            }
+
+            if rules.show_fps {
+                let fps_text = format!("FPS: {}", get_fps());
+                draw_text(
+                    &fps_text,
+                    screen_width() - 140.0,
+                    24.0,
+                    20.0,
+                    GREEN,
+                );
+            }
+
+            if rules.debug_overlay {
+                let dbg = format!("Seed: {} | Level: {}", seed, level);
+                draw_text(
+                    &dbg,
+                    16.0,
+                    screen_height() - 16.0,
+                    18.0,
+                    GREEN,
+                );
+            }
         }
 
         match state {
             GameState::MainMenu => {
                 let title = "Random Platformer Engine";
                 let opt1 = "Start Game";
-                let opt2 = "Play Cartridge";
-                let opt3 = "Settings";
-                let opt4 = "Help";
-                let opt5 = "Quit";
+                let opt2 = "Custom Levels";
+                let opt3 = "Level Editor";
+                let opt4 = "Play Cartridge";
+                let opt5 = "Settings";
+                let opt6 = "Help";
+                let opt7 = "Quit";
 
                 let center_x = screen_width() * 0.5;
                 let center_y = screen_height() * 0.5;
@@ -760,6 +1297,8 @@ async fn main() {
                 let color3 = if menu_index == 2 { GREEN } else { GRAY };
                 let color4 = if menu_index == 3 { GREEN } else { GRAY };
                 let color5 = if menu_index == 4 { GREEN } else { GRAY };
+                let color6 = if menu_index == 5 { GREEN } else { GRAY };
+                let color7 = if menu_index == 6 { GREEN } else { GRAY };
 
                 draw_text(
                     opt1,
@@ -795,6 +1334,20 @@ async fn main() {
                     center_y + 160.0,
                     28.0,
                     color5,
+                );
+                draw_text(
+                    opt6,
+                    center_x - 80.0,
+                    center_y + 200.0,
+                    28.0,
+                    color6,
+                );
+                draw_text(
+                    opt7,
+                    center_x - 80.0,
+                    center_y + 240.0,
+                    28.0,
+                    color7,
                 );
             }
             GameState::Paused => {
@@ -1084,6 +1637,7 @@ async fn main() {
                 draw_text(&summary3, cx - 140.0, cy + 140.0, 24.0, WHITE);
             }
             GameState::Playing => {}
+            GameState::LevelEditor => {}
         }
 
         if rules.vsync_enabled {
@@ -1159,6 +1713,85 @@ fn make_scene(
     let world_h = screen_h * world_height_screens;
     let screen_size = vec2(world_w, world_h);
     generate_scene(assets, rules, level, screen_size, rng)
+}
+
+fn remove_nearest_in_level(
+    level: &mut crate::generator::CustomLevel,
+    pos: Vec2,
+    radius: f32,
+) {
+    remove_nearest_in_level_category(level, pos, radius, -1);
+}
+
+fn remove_nearest_in_level_category(
+    level: &mut crate::generator::CustomLevel,
+    pos: Vec2,
+    radius: f32,
+    category: i32,
+) {
+    let r2 = radius * radius;
+
+    let mut best: Option<(usize, i32)> = None;
+    let mut best_dist2 = r2;
+
+    // platforms (category 1 or any if category < 0)
+    if category < 0 || category == 1 {
+        for (i, p) in level.platforms.iter().enumerate() {
+            let d2 = (vec2(p.x, p.y) - pos).length_squared();
+            if d2 <= best_dist2 {
+                best_dist2 = d2;
+                best = Some((i, 1));
+            }
+        }
+    }
+
+    // enemies (category 2 or any)
+    if category < 0 || category == 2 {
+        for (i, e) in level.enemies.iter().enumerate() {
+            let d2 = (vec2(e.x, e.y) - pos).length_squared();
+            if d2 <= best_dist2 {
+                best_dist2 = d2;
+                best = Some((i, 2));
+            }
+        }
+    }
+
+    // collectibles (category 3 or any)
+    if category < 0 || category == 3 {
+        for (i, c) in level.collectibles.iter().enumerate() {
+            let d2 = (vec2(c.x, c.y) - pos).length_squared();
+            if d2 <= best_dist2 {
+                best_dist2 = d2;
+                best = Some((i, 3));
+            }
+        }
+    }
+
+    // player start (category 0 or any)
+    if (category < 0 || category == 0) && level.player_start.is_some() {
+        if let Some(ref start) = level.player_start {
+            let d2 = (vec2(start.x, start.y) - pos).length_squared();
+            if d2 <= best_dist2 {
+                best = Some((0, 0));
+            }
+        }
+    }
+
+    if let Some((index, cat)) = best {
+        match cat {
+            0 => level.player_start = None,
+            1 => {
+                level.platforms.remove(index);
+            }
+            2 => {
+                level.enemies.remove(index);
+            }
+            3 => {
+                level.collectibles.remove(index);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn random_seed_from_time() -> u64 {

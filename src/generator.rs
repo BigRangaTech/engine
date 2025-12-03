@@ -452,6 +452,8 @@ pub fn generate_scene(
                         position: vec2(x, y),
                         base_position: vec2(x, y),
                         phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                        moving: rules.moving_platform_enabled,
+                        vertical: rules.moving_platform_vertical,
                     });
                 }
             }
@@ -482,6 +484,8 @@ pub fn generate_scene(
                         position: vec2(x, y),
                         base_position: vec2(x, y),
                         phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                        moving: rules.moving_platform_enabled,
+                        vertical: rules.moving_platform_vertical,
                     });
                 }
             }
@@ -501,6 +505,7 @@ pub fn generate_scene(
             health_value: 0,
             base_position: player_pos,
             phase: 0.0,
+            jumping: false,
         });
     }
 
@@ -547,6 +552,7 @@ pub fn generate_scene(
                     health_value: 0,
                     base_position: vec2(x, y),
                     phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                    jumping: rules.enemy_jump_enabled,
                 });
             }
         }
@@ -650,6 +656,7 @@ pub fn spawn_collectibles(
                         health_value,
                         base_position: vec2(x, y),
                         phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                        jumping: false,
                     });
                 }
             }
@@ -683,6 +690,7 @@ pub fn spawn_collectibles(
                         health_value,
                         base_position: vec2(x, y),
                         phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                        jumping: false,
                     });
                 }
             }
@@ -704,6 +712,12 @@ pub struct CustomLevelEntity {
     pub sprite: String,
     pub x: f32,
     pub y: f32,
+    #[serde(default)]
+    pub moving: bool,
+    #[serde(default)]
+    pub vertical: bool,
+    #[serde(default)]
+    pub jumping: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -840,6 +854,8 @@ fn apply_custom_level_def(
                 position: pos,
                 base_position: pos,
                 phase: 0.0,
+                moving: p.moving,
+                vertical: p.vertical,
             });
         } else {
             eprintln!(
@@ -868,6 +884,7 @@ fn apply_custom_level_def(
                 health_value: 0,
                 base_position: pos,
                 phase: 0.0,
+                jumping: e_def.jumping,
             });
         } else {
             eprintln!(

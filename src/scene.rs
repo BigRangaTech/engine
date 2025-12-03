@@ -17,6 +17,7 @@ pub struct Entity {
     pub health_value: u32,
     pub base_position: Vec2,
     pub phase: f32,
+    pub jumping: bool,
 }
 
 pub struct Sounds {
@@ -40,6 +41,8 @@ pub struct Platform {
     pub position: Vec2,
     pub base_position: Vec2,
     pub phase: f32,
+    pub moving: bool,
+    pub vertical: bool,
 }
 
 pub struct Particle {
@@ -214,12 +217,15 @@ impl Scene {
             self.enemy_shoot_timer = (self.enemy_shoot_timer - dt).max(0.0);
         }
 
-        // Move platforms if enabled
+        // Move platforms if enabled (per-platform)
         if self.moving_platform_enabled {
             let t = self.time * self.moving_platform_speed;
             for platform in &mut self.platforms {
+                if !platform.moving {
+                    continue;
+                }
                 let offset = (t + platform.phase).sin() * self.moving_platform_amplitude;
-                if self.moving_platform_vertical {
+                if platform.vertical {
                     platform.position.y = platform.base_position.y + offset;
                 } else {
                     platform.position.x = platform.base_position.x + offset;
@@ -330,6 +336,7 @@ impl Scene {
                     }
 
                     if self.enemy_jump_enabled
+                        && entity.jumping
                         && self.enemy_jump_interval > 0.0
                         && self.enemy_jump_timer <= 0.0
                     {
@@ -358,6 +365,7 @@ impl Scene {
                                     health_value: 0,
                                     base_position: entity.position,
                                     phase: 0.0,
+                                    jumping: false,
                                 });
                                 any_enemy_shot = true;
                             }
