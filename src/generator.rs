@@ -122,6 +122,25 @@ pub struct GameRules {
     pub jump_particle_count: u32,
     pub hit_particle_count: u32,
     pub pickup_particle_count: u32,
+    pub editor: EditorOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorOptions {
+    pub default_platform_moving: bool,
+    pub default_platform_vertical: bool,
+    pub default_enemy_jumping: bool,
+}
+
+impl Default for EditorOptions {
+    fn default() -> Self {
+        Self {
+            default_platform_moving: false,
+            default_platform_vertical: false,
+            default_enemy_jumping: false,
+        }
+    }
 }
 
 impl Default for GameRules {
@@ -241,6 +260,7 @@ impl Default for GameRules {
             jump_particle_count: 10,
             hit_particle_count: 18,
             pickup_particle_count: 12,
+            editor: EditorOptions::default(),
         }
     }
 }
@@ -831,6 +851,7 @@ fn apply_custom_level_def(
             health_value: 0,
             base_position: vec2(px, py),
             phase: 0.0,
+            jumping: false,
         });
     } else {
         eprintln!("No player sprites loaded; cannot build custom level.");
@@ -926,6 +947,7 @@ fn apply_custom_level_def(
                 health_value,
                 base_position: pos,
                 phase: 0.0,
+                jumping: false,
             });
         } else {
             eprintln!(

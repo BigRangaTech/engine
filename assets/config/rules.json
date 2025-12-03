@@ -112,5 +112,10 @@
   "particles_enabled": true,
   "jump_particle_count": 10,
   "hit_particle_count": 18,
-  "pickup_particle_count": 12
+  "pickup_particle_count": 12,
+  "editor": {
+    "default_platform_moving": false,
+    "default_platform_vertical": false,
+    "default_enemy_jumping": false
+  }
 }

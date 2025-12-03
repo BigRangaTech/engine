@@ -732,6 +732,9 @@ async fn main() {
                                         sprite: sprite.name.clone(),
                                         x: world_pos.x,
                                         y: world_pos.y,
+                                        moving: false,
+                                        vertical: false,
+                                        jumping: false,
                                     });
                                 }
                             }
@@ -747,6 +750,9 @@ async fn main() {
                                             sprite: sprite.name.clone(),
                                             x: world_pos.x,
                                             y: world_pos.y,
+                                            moving: rules.editor.default_platform_moving,
+                                            vertical: rules.editor.default_platform_vertical,
+                                            jumping: false,
                                         },
                                     );
                                 }
@@ -763,6 +769,9 @@ async fn main() {
                                             sprite: sprite.name.clone(),
                                             x: world_pos.x,
                                             y: world_pos.y,
+                                            moving: false,
+                                            vertical: false,
+                                            jumping: rules.editor.default_enemy_jumping,
                                         },
                                     );
                                 }
