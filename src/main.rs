@@ -13,7 +13,7 @@ use crate::export::{
     list_run_cartridges,
     load_run_cartridge,
 };
-use crate::generator::{generate_scene, load_rules, save_rules, spawn_collectibles, GameRules};
+use crate::generator::{load_rules, save_rules, spawn_collectibles, GameRules};
 use crate::scene::{Scene, Sounds, EntityKind};
 use macroquad::prelude::*;
 use ::rand::SeedableRng;
@@ -94,8 +94,8 @@ async fn main() {
     let mut settings_return_to = GameState::Paused;
     let mut cartridge_files: Vec<String> = Vec::new();
     let mut cartridge_index: i32 = 0;
-    let mut level_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-    let mut scene = make_scene(&assets, &rules, level, &mut level_rng);
+    let mut spawn_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
+    let mut scene = make_scene(&assets, &rules, level, seed);
     let mut editor_level_data: Option<crate::generator::CustomLevel> = None;
     let mut editor_tool_index: i32 = 1; // 0: Player, 1: Platform, 2: Enemy, 3: Collectible, 4: Eraser
     let mut editor_player_index: i32 = 0;
@@ -104,6 +104,15 @@ async fn main() {
     let mut editor_collectible_index: i32 = 0;
     let mut editor_camera: Vec2 = Vec2::ZERO;
     let mut editor_preview_scale: f32 = 1.0;
+    let mut editor_show_assets: bool = false;
+    let mut editor_assets_scroll: i32 = 0;
+    let mut editor_platform_moving = rules.editor.default_platform_moving;
+    let mut editor_platform_vertical = rules.editor.default_platform_vertical;
+    let mut editor_enemy_jumping = rules.editor.default_enemy_jumping;
+    let mut editor_last_paint_cell: Option<(i32, i32, i32)> = None;
+
+    let mut pregen_handle: Option<std::thread::JoinHandle<Scene>> = None;
+    let mut pregen_level: Option<u32> = None;
 
     loop {
         let frame_start = std::time::Instant::now();
@@ -126,9 +135,11 @@ async fn main() {
                         0 => {
                             level = 1;
                             total_collected = 0;
-                            level_rng =
+                            spawn_rng =
                                 StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-                            scene = make_scene(&assets, &rules, level, &mut level_rng);
+                            pregen_handle = None;
+                            pregen_level = None;
+                            scene = make_scene(&assets, &rules, level, seed);
                             state = GameState::Playing;
                         }
                         1 => {
@@ -136,9 +147,11 @@ async fn main() {
                             level = 1;
                             total_collected = 0;
                             rules.mode = "custom".to_string();
-                            level_rng =
+                            spawn_rng =
                                 StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-                            scene = make_scene(&assets, &rules, level, &mut level_rng);
+                            pregen_handle = None;
+                            pregen_level = None;
+                            scene = make_scene(&assets, &rules, level, seed);
                             state = GameState::Playing;
                         }
                         2 => {
@@ -175,6 +188,45 @@ async fn main() {
                 if is_key_pressed(KeyCode::Escape) {
                     state = GameState::Paused;
                 } else {
+                    // Kick off pre-generation for the next level if needed
+                    if level < rules.max_level {
+                        let target_level = level + 1;
+                        let need_pregen = match pregen_level {
+                            Some(l) if l == target_level => false,
+                            _ => true,
+                        };
+                        if need_pregen {
+                            pregen_handle = None;
+                            pregen_level = Some(target_level);
+
+                            let assets_clone = assets.clone();
+                            let rules_clone = rules.clone();
+                            let seed_for_pregen = seed;
+                            let screen_size = {
+                                let world_width_screens =
+                                    rules_clone.world_width_screens.max(1.0);
+                                let world_height_screens =
+                                    rules_clone.world_height_screens.max(1.0);
+                                let screen_w = screen_width();
+                                let screen_h = screen_height();
+                                vec2(
+                                    screen_w * world_width_screens,
+                                    screen_h * world_height_screens,
+                                )
+                            };
+
+                            pregen_handle = Some(std::thread::spawn(move || {
+                                crate::generator::generate_scene_for_seed(
+                                    &assets_clone,
+                                    &rules_clone,
+                                    target_level,
+                                    screen_size,
+                                    seed_for_pregen,
+                                )
+                            }));
+                        }
+                    }
+
                     // Edit current level while in custom mode
                     if rules.mode.to_lowercase() == "custom"
                         && is_key_pressed(KeyCode::F2)
@@ -196,7 +248,7 @@ async fn main() {
                     }
 
                     if is_key_pressed(KeyCode::R) {
-                        scene = make_scene(&assets, &rules, level, &mut level_rng);
+                        scene = make_scene(&assets, &rules, level, seed);
                     }
 
                     let prev_score = scene.score;
@@ -212,9 +264,33 @@ async fn main() {
 
                         if total_collected >= rules.collectibles_for_level_up {
                             if level < rules.max_level {
-                                level += 1;
+                                let new_level = level + 1;
                                 total_collected -= rules.collectibles_for_level_up;
-                                scene = make_scene(&assets, &rules, level, &mut level_rng);
+                                level = new_level;
+
+                                if let (Some(pl), Some(handle)) =
+                                    (pregen_level.take(), pregen_handle.take())
+                                {
+                                    if pl == new_level {
+                                        match handle.join() {
+                                            Ok(s) => {
+                                                scene = s;
+                                            }
+                                            Err(_) => {
+                                                scene = make_scene(
+                                                    &assets,
+                                                    &rules,
+                                                    level,
+                                                    seed,
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        scene = make_scene(&assets, &rules, level, seed);
+                                    }
+                                } else {
+                                    scene = make_scene(&assets, &rules, level, seed);
+                                }
                             } else {
                                 state = GameState::Won;
                             }
@@ -229,7 +305,7 @@ async fn main() {
                                     &assets,
                                     &rules,
                                     level,
-                                    &mut level_rng,
+                                    &mut spawn_rng,
                                     1.0,
                                 );
                             }
@@ -309,7 +385,9 @@ async fn main() {
                     if new_scheme != rules.control_scheme {
                         rules.control_scheme = new_scheme;
                         // Regenerate scene so new control scheme takes effect
-                        scene = make_scene(&assets, &rules, level, &mut level_rng);
+                        scene = make_scene(&assets, &rules, level, seed);
+                        pregen_handle = None;
+                        pregen_level = None;
                     }
                 }
 
@@ -392,7 +470,9 @@ async fn main() {
                         rebind_step += 1;
                         if rebind_step >= 6 {
                             // Rebuild scene so new bindings take effect
-                            scene = make_scene(&assets, &rules, level, &mut level_rng);
+                            scene = make_scene(&assets, &rules, level, seed);
+                            pregen_handle = None;
+                            pregen_level = None;
                             state = GameState::Settings;
                         }
                     }
@@ -429,7 +509,9 @@ async fn main() {
                                     RESOLUTIONS[resolution_index as usize];
                                 macroquad::window::request_new_screen_size(w, h);
                                 update_music_volume(&sounds, &rules);
-                                scene = make_scene(&assets, &rules, level, &mut level_rng);
+                                scene = make_scene(&assets, &rules, level, seed);
+                                pregen_handle = None;
+                                pregen_level = None;
                             }
                         }
                         3 | 4 | 5 => {
@@ -456,7 +538,7 @@ async fn main() {
                 let right = is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D);
 
                 // Fixed list of tunable fields
-                const RULE_ITEMS: usize = 12;
+                const RULE_ITEMS: usize = 16;
 
                 if up {
                     rules_menu_index = (rules_menu_index - 1).rem_euclid(RULE_ITEMS as i32);
@@ -543,6 +625,133 @@ async fn main() {
                             // Enemy shooting toggle
                             rules.enemy_shoot_enabled = !rules.enemy_shoot_enabled;
                         }
+                        12 => {
+                            // Editor grid size
+                            let v = rules.editor.grid_size
+                                + dir * step_small_f32;
+                            rules.editor.grid_size = v.max(4.0);
+                        }
+                        13 => {
+                            // Vignette toggle
+                            rules.vignette_enabled = !rules.vignette_enabled;
+                        }
+                        14 => {
+                            // Enemy AI preset
+                            let presets = ["Patrol", "Chase", "Circle", "Mixed"];
+
+                            let mut idx = match rules.enemy_behavior_mode.to_lowercase().as_str() {
+                                "patrol" => 0,
+                                "chase" => 1,
+                                "circle" => 2,
+                                "mixed" => 3,
+                                _ => 0,
+                            } as i32;
+
+                            idx = (idx + if left { -1 } else { 1 })
+                                .rem_euclid(presets.len() as i32);
+                            let new_idx = idx as usize;
+
+                            match new_idx {
+                                0 => {
+                                    // Patrol
+                                    rules.enemy_behavior_mode = "patrol".to_string();
+                                }
+                                1 => {
+                                    // Chase
+                                    rules.enemy_behavior_mode = "chase".to_string();
+                                    rules.enemy_chase_range = 480.0;
+                                }
+                                2 => {
+                                    // Circle
+                                    rules.enemy_behavior_mode = "circle".to_string();
+                                    rules.enemy_circle_radius = 40.0;
+                                    rules.enemy_circle_speed = 1.2;
+                                }
+                                3 => {
+                                    // Mixed (random per level)
+                                    rules.enemy_behavior_mode = "mixed".to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+                        15 => {
+                            // Layout preset
+                            let presets = ["Flat Small", "Flat Big", "Stairs Big", "Islands Big"];
+
+                            // Infer current index from rules
+                            let mut idx = {
+                                let w = rules.world_width_screens;
+                                let h = rules.world_height_screens;
+                                let pattern = rules.layout_pattern_mode.to_lowercase();
+                                let islands = rules.layout_islands_enabled;
+
+                                if (w - 2.0).abs() < 0.1
+                                    && (h - 3.0).abs() < 0.1
+                                    && pattern == "normal"
+                                    && !islands
+                                {
+                                    0
+                                } else if (w - 7.0).abs() < 0.1
+                                    && (h - 14.0).abs() < 0.1
+                                    && pattern == "normal"
+                                    && !islands
+                                {
+                                    1
+                                } else if (w - 7.0).abs() < 0.1
+                                    && (h - 14.0).abs() < 0.1
+                                    && (pattern == "stairs_up" || pattern == "stairsup")
+                                    && !islands
+                                {
+                                    2
+                                } else if (w - 7.0).abs() < 0.1
+                                    && (h - 14.0).abs() < 0.1
+                                    && islands
+                                {
+                                    3
+                                } else {
+                                    0
+                                }
+                            } as i32;
+
+                            idx = (idx + if left { -1 } else { 1 })
+                                .rem_euclid(presets.len() as i32);
+                            let new_idx = idx as usize;
+
+                            match new_idx {
+                                0 => {
+                                    // Flat Small
+                                    rules.world_width_screens = 2.0;
+                                    rules.world_height_screens = 3.0;
+                                    rules.layout_pattern_mode = "normal".to_string();
+                                    rules.layout_islands_enabled = false;
+                                }
+                                1 => {
+                                    // Flat Big
+                                    rules.world_width_screens = 7.0;
+                                    rules.world_height_screens = 14.0;
+                                    rules.layout_pattern_mode = "normal".to_string();
+                                    rules.layout_islands_enabled = false;
+                                }
+                                2 => {
+                                    // Stairs Big
+                                    rules.world_width_screens = 7.0;
+                                    rules.world_height_screens = 14.0;
+                                    rules.layout_pattern_mode = "stairs_up".to_string();
+                                    rules.layout_stair_step = 32.0;
+                                    rules.layout_islands_enabled = false;
+                                }
+                                3 => {
+                                    // Islands Big (mixed patterns + clustered platforms)
+                                    rules.world_width_screens = 7.0;
+                                    rules.world_height_screens = 14.0;
+                                    rules.layout_pattern_mode = "auto".to_string();
+                                    rules.layout_islands_enabled = true;
+                                    rules.layout_islands_count = 3;
+                                    rules.layout_islands_span = 0.35;
+                                }
+                                _ => {}
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -558,6 +767,10 @@ async fn main() {
                 // Ensure we have some data to edit
                 if editor_level_data.is_none() {
                     editor_level_data = Some(crate::generator::CustomLevel {
+                        name: None,
+                        background: None,
+                        gravity_scale: None,
+                        enemy_speed_scale: None,
                         player_start: None,
                         platforms: Vec::new(),
                         enemies: Vec::new(),
@@ -584,19 +797,82 @@ async fn main() {
                     editor_camera.y += pan_speed * dt;
                 }
 
-                // Scroll wheel adjusts preview scale
+                // Sprite lists for editor tools
+                let player_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Player);
+                let platform_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Platform);
+                let enemy_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Enemy);
+                let collectible_sprites = {
+                    let mut list =
+                        assets.sprites_of_kind(crate::assets::SpriteKind::Collectible);
+                    let mut goals =
+                        assets.sprites_of_kind(crate::assets::SpriteKind::GoalCollectible);
+                    list.append(&mut goals);
+                    list
+                };
+
+                // Scroll wheel: either adjust preview scale or scroll asset list
                 let (_wheel_x, wheel_y) = mouse_wheel();
                 if wheel_y.abs() > f32::EPSILON {
-                    editor_preview_scale =
-                        (editor_preview_scale + wheel_y * 0.1).clamp(0.25, 4.0);
+                    let (mx, my) = mouse_position();
+                    let panel_w = 260.0;
+                    let panel_h = 260.0;
+                    let panel_x = screen_width() - panel_w - 16.0;
+                    let panel_y = 96.0;
+                    let over_assets_panel = editor_show_assets
+                        && mx >= panel_x
+                        && mx <= panel_x + panel_w
+                        && my >= panel_y
+                        && my <= panel_y + panel_h;
+
+                    if over_assets_panel {
+                        // Scroll asset list
+                        let (list_len, max_rows) = match editor_tool_index {
+                            0 => (player_sprites.len(), ((panel_h - 48.0) / 22.0) as i32),
+                            1 => (platform_sprites.len(), ((panel_h - 48.0) / 22.0) as i32),
+                            2 => (enemy_sprites.len(), ((panel_h - 48.0) / 22.0) as i32),
+                            3 => (collectible_sprites.len(), ((panel_h - 48.0) / 22.0) as i32),
+                            _ => (0usize, 0),
+                        };
+                        if list_len as i32 > max_rows && max_rows > 0 {
+                            let max_scroll =
+                                (list_len as i32 - max_rows).max(0);
+                            if wheel_y > 0.0 {
+                                editor_assets_scroll =
+                                    (editor_assets_scroll - 1).max(0);
+                            } else {
+                                editor_assets_scroll =
+                                    (editor_assets_scroll + 1).min(max_scroll);
+                            }
+                        }
+                    } else {
+                        // Adjust preview scale
+                        editor_preview_scale =
+                            (editor_preview_scale + wheel_y * 0.1).clamp(0.25, 4.0);
+                    }
                 }
 
                 // Cycle tools with Q/E
                 if is_key_pressed(KeyCode::Q) {
                     editor_tool_index = (editor_tool_index - 1).rem_euclid(5);
+                    editor_assets_scroll = 0;
                 }
                 if is_key_pressed(KeyCode::E) {
                     editor_tool_index = (editor_tool_index + 1).rem_euclid(5);
+                    editor_assets_scroll = 0;
+                }
+
+                // Behavior toggles for new entities
+                if is_key_pressed(KeyCode::M) {
+                    editor_platform_moving = !editor_platform_moving;
+                    rules.editor.default_platform_moving = editor_platform_moving;
+                }
+                if is_key_pressed(KeyCode::V) {
+                    editor_platform_vertical = !editor_platform_vertical;
+                    rules.editor.default_platform_vertical = editor_platform_vertical;
+                }
+                if is_key_pressed(KeyCode::J) {
+                    editor_enemy_jumping = !editor_enemy_jumping;
+                    rules.editor.default_enemy_jumping = editor_enemy_jumping;
                 }
 
                 // Change level with Z/X (save current, then load new)
@@ -609,6 +885,7 @@ async fn main() {
                         }
                     }
                     editor_level = editor_level.saturating_sub(1).max(1);
+                    editor_assets_scroll = 0;
                     editor_level_data =
                         crate::generator::load_custom_level(editor_level, &rules);
                 }
@@ -623,17 +900,7 @@ async fn main() {
                     editor_level = editor_level.saturating_add(1);
                     editor_level_data =
                         crate::generator::load_custom_level(editor_level, &rules);
-                }
-
-                // Sprite selection indices
-                let player_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Player);
-                let platform_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Platform);
-                let enemy_sprites = assets.sprites_of_kind(crate::assets::SpriteKind::Enemy);
-                let collectible_sprites =
-                    assets.sprites_of_kind(crate::assets::SpriteKind::Collectible);
-
-                if is_key_pressed(KeyCode::Z) || is_key_pressed(KeyCode::X) {
-                    // already handled for level switching above
+                    editor_assets_scroll = 0;
                 }
 
                 // Use A/D style keys for sprite cycling per category
@@ -709,17 +976,278 @@ async fn main() {
                     }
                 }
 
+                // Handle simple UI buttons (Assets list and Play From Here)
+                let mut click_consumed = false;
+                if is_mouse_button_pressed(MouseButton::Left) {
+                    let (mx, my) = mouse_position();
+                    let btn_x = 16.0;
+                    let btn_y = 72.0;
+                    let btn_w = 140.0;
+                    let btn_h = 28.0;
+
+                    // Assets button
+                    if mx >= btn_x && mx <= btn_x + btn_w && my >= btn_y && my <= btn_y + btn_h {
+                        editor_show_assets = !editor_show_assets;
+                        if editor_show_assets {
+                            editor_assets_scroll = 0;
+                        }
+                        click_consumed = true;
+                    } else {
+                        // Play From Here button
+                        let play_btn_x = btn_x + btn_w + 12.0;
+                        let play_btn_y = btn_y;
+                        let play_btn_w = 180.0;
+                        let play_btn_h = btn_h;
+
+                        if mx >= play_btn_x
+                            && mx <= play_btn_x + play_btn_w
+                            && my >= play_btn_y
+                            && my <= play_btn_y + play_btn_h
+                        {
+                            if let Some(ref data) = editor_level_data {
+                                if let Err(e) =
+                                    crate::generator::save_custom_level(editor_level, &rules, data)
+                                {
+                                    eprintln!("{e}");
+                                }
+                            }
+                            rules.mode = "custom".to_string();
+                            level = editor_level;
+                            total_collected = 0;
+                            run_score = 0;
+                            run_time = 0.0;
+                            spawn_rng = StdRng::seed_from_u64(
+                                seed ^ 0x9E3779B97F4A7C15,
+                            );
+                            pregen_handle = None;
+                            pregen_level = None;
+                            scene = make_scene(&assets, &rules, level, seed);
+                            state = GameState::Playing;
+                            click_consumed = true;
+                        } else if editor_show_assets {
+                            // Click inside assets overlay to pick a sprite
+                            let panel_w = 260.0;
+                            let panel_h = 260.0;
+                            let panel_x = screen_width() - panel_w - 16.0;
+                            let panel_y = 96.0;
+                            if mx >= panel_x
+                                && mx <= panel_x + panel_w
+                                && my >= panel_y
+                                && my <= panel_y + panel_h
+                            {
+                                let row_h = 22.0;
+                                let max_rows =
+                                    ((panel_h - 48.0) / row_h) as i32;
+                                let index_in_panel =
+                                    ((my - (panel_y + 8.0)) / row_h).floor()
+                                        as i32;
+                                if index_in_panel >= 0
+                                    && index_in_panel < max_rows
+                                {
+                                    match editor_tool_index {
+                                        0 => {
+                                            let list = &player_sprites;
+                                            let start =
+                                                editor_assets_scroll.max(0)
+                                                    as usize;
+                                            let idx = start
+                                                + index_in_panel as usize;
+                                            if idx < list.len() {
+                                                editor_player_index =
+                                                    idx as i32;
+                                            }
+                                        }
+                                        1 => {
+                                            let list = &platform_sprites;
+                                            let start =
+                                                editor_assets_scroll.max(0)
+                                                    as usize;
+                                            let idx = start
+                                                + index_in_panel as usize;
+                                            if idx < list.len() {
+                                                editor_platform_index =
+                                                    idx as i32;
+                                            }
+                                        }
+                                        2 => {
+                                            let list = &enemy_sprites;
+                                            let start =
+                                                editor_assets_scroll.max(0)
+                                                    as usize;
+                                            let idx = start
+                                                + index_in_panel as usize;
+                                            if idx < list.len() {
+                                                editor_enemy_index =
+                                                    idx as i32;
+                                            }
+                                        }
+                                        3 => {
+                                            let list = &collectible_sprites;
+                                            let start =
+                                                editor_assets_scroll.max(0)
+                                                    as usize;
+                                            let idx = start
+                                                + index_in_panel as usize;
+                                            if idx < list.len() {
+                                                editor_collectible_index =
+                                                    idx as i32;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                click_consumed = true;
+                            }
+                        }
+                    }
+                }
+
                 // Place / remove items with mouse (snapped to grid)
                 if let Some(ref mut data) = editor_level_data {
                     let mouse = mouse_position();
-                    let grid = 64.0f32;
+                    let grid = rules.editor.grid_size.max(4.0);
                     let raw_pos = vec2(mouse.0 + editor_camera.x, mouse.1 + editor_camera.y);
                     let world_pos = vec2(
                         (raw_pos.x / grid).round() * grid,
                         (raw_pos.y / grid).round() * grid,
                     );
 
-                    if is_mouse_button_pressed(MouseButton::Left) {
+                    // Clone tool: hold C and click to pick sprite/behavior from nearest entity
+                    if !click_consumed
+                        && is_mouse_button_pressed(MouseButton::Left)
+                        && is_key_down(KeyCode::C)
+                    {
+                        let mut best_kind: Option<i32> = None; // 0 player,1 platform,2 enemy,3 collectible
+                        let mut best_idx: usize = 0;
+                        let mut best_d2 = 48.0f32 * 48.0;
+
+                        // Player
+                        if let Some(ref start) = data.player_start {
+                            let d2 =
+                                (vec2(start.x, start.y) - world_pos).length_squared();
+                            if d2 <= best_d2 {
+                                best_d2 = d2;
+                                best_kind = Some(0);
+                                best_idx = 0;
+                            }
+                        }
+
+                        // Platforms
+                        for (i, p) in data.platforms.iter().enumerate() {
+                            let d2 =
+                                (vec2(p.x, p.y) - world_pos).length_squared();
+                            if d2 <= best_d2 {
+                                best_d2 = d2;
+                                best_kind = Some(1);
+                                best_idx = i;
+                            }
+                        }
+
+                        // Enemies
+                        for (i, e) in data.enemies.iter().enumerate() {
+                            let d2 =
+                                (vec2(e.x, e.y) - world_pos).length_squared();
+                            if d2 <= best_d2 {
+                                best_d2 = d2;
+                                best_kind = Some(2);
+                                best_idx = i;
+                            }
+                        }
+
+                        // Collectibles
+                        for (i, c) in data.collectibles.iter().enumerate() {
+                            let d2 =
+                                (vec2(c.x, c.y) - world_pos).length_squared();
+                            if d2 <= best_d2 {
+                                best_d2 = d2;
+                                best_kind = Some(3);
+                                best_idx = i;
+                            }
+                        }
+
+                        if let Some(kind) = best_kind {
+                            match kind {
+                                0 => {
+                                    // Clone player sprite
+                                    if let Some(ref start) = data.player_start {
+                                        editor_tool_index = 0;
+                                        if let Some((idx, _)) =
+                                            player_sprites
+                                                .iter()
+                                                .enumerate()
+                                                .find(|(_, s)| s.name == start.sprite)
+                                        {
+                                            editor_player_index = idx as i32;
+                                        }
+                                    }
+                                }
+                                1 => {
+                                    // Clone platform sprite + behavior
+                                    if let Some(p) = data.platforms.get(best_idx) {
+                                        editor_tool_index = 1;
+                                        if let Some((idx, _)) =
+                                            platform_sprites
+                                                .iter()
+                                                .enumerate()
+                                                .find(|(_, s)| s.name == p.sprite)
+                                        {
+                                            editor_platform_index = idx as i32;
+                                        }
+                                        editor_platform_moving = p.moving;
+                                        editor_platform_vertical = p.vertical;
+                                        rules.editor.default_platform_moving =
+                                            editor_platform_moving;
+                                        rules.editor.default_platform_vertical =
+                                            editor_platform_vertical;
+                                    }
+                                }
+                                2 => {
+                                    // Clone enemy sprite + behavior
+                                    if let Some(e) = data.enemies.get(best_idx) {
+                                        editor_tool_index = 2;
+                                        if let Some((idx, _)) =
+                                            enemy_sprites
+                                                .iter()
+                                                .enumerate()
+                                                .find(|(_, s)| s.name == e.sprite)
+                                        {
+                                            editor_enemy_index = idx as i32;
+                                        }
+                                        editor_enemy_jumping = e.jumping;
+                                        rules.editor.default_enemy_jumping =
+                                            editor_enemy_jumping;
+                                    }
+                                }
+                                3 => {
+                                    // Clone collectible sprite
+                                    if let Some(c) =
+                                        data.collectibles.get(best_idx)
+                                    {
+                                        editor_tool_index = 3;
+                                        if let Some((idx, _)) =
+                                            collectible_sprites
+                                                .iter()
+                                                .enumerate()
+                                                .find(|(_, s)| s.name == c.sprite)
+                                        {
+                                            editor_collectible_index = idx as i32;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        click_consumed = true;
+                    }
+
+                    // Continuous paint while dragging, but only when we move to a new grid cell
+                    if !click_consumed && is_mouse_button_down(MouseButton::Left) {
+                        let cell_x = (world_pos.x / grid).round() as i32;
+                        let cell_y = (world_pos.y / grid).round() as i32;
+                        let key = (editor_tool_index, cell_x, cell_y);
+                        if editor_last_paint_cell != Some(key) {
+                            editor_last_paint_cell = Some(key);
                         match editor_tool_index {
                             0 => {
                                 // Player
@@ -750,8 +1278,8 @@ async fn main() {
                                             sprite: sprite.name.clone(),
                                             x: world_pos.x,
                                             y: world_pos.y,
-                                            moving: rules.editor.default_platform_moving,
-                                            vertical: rules.editor.default_platform_vertical,
+                                            moving: editor_platform_moving,
+                                            vertical: editor_platform_vertical,
                                             jumping: false,
                                         },
                                     );
@@ -771,7 +1299,7 @@ async fn main() {
                                             y: world_pos.y,
                                             moving: false,
                                             vertical: false,
-                                            jumping: rules.editor.default_enemy_jumping,
+                                            jumping: editor_enemy_jumping,
                                         },
                                     );
                                 }
@@ -800,6 +1328,12 @@ async fn main() {
                             }
                             _ => {}
                         }
+                        }
+                    }
+
+                    // Reset drag-paint tracking when button is released
+                    if !is_mouse_button_down(MouseButton::Left) {
+                        editor_last_paint_cell = None;
                     }
 
                     if is_mouse_button_pressed(MouseButton::Right) {
@@ -869,10 +1403,11 @@ async fn main() {
                                 total_collected = 0;
                                 run_score = 0;
                                 run_time = 0.0;
-                                level_rng =
+                                spawn_rng =
                                     StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-                                scene =
-                                    make_scene(&assets, &rules, level, &mut level_rng);
+                                pregen_handle = None;
+                                pregen_level = None;
+                                scene = make_scene(&assets, &rules, level, seed);
                                 state = GameState::Playing;
                             }
                             Err(e) => {
@@ -902,8 +1437,10 @@ async fn main() {
                     total_collected = 0;
                     run_score = 0;
                     run_time = 0.0;
-                    level_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-                    scene = make_scene(&assets, &rules, level, &mut level_rng);
+                    spawn_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
+                    pregen_handle = None;
+                    pregen_level = None;
+                    scene = make_scene(&assets, &rules, level, seed);
                     state = GameState::Playing;
                 }
             }
@@ -919,8 +1456,10 @@ async fn main() {
                     total_collected = 0;
                     run_score = 0;
                     run_time = 0.0;
-                    level_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
-                    scene = make_scene(&assets, &rules, level, &mut level_rng);
+                    spawn_rng = StdRng::seed_from_u64(seed ^ 0x9E3779B97F4A7C15);
+                    pregen_handle = None;
+                    pregen_level = None;
+                    scene = make_scene(&assets, &rules, level, seed);
                     state = GameState::Playing;
                 }
             }
@@ -935,7 +1474,7 @@ async fn main() {
             // Draw grid
             let sw = screen_width();
             let sh = screen_height();
-            let grid = 64.0f32;
+            let grid = rules.editor.grid_size.max(4.0);
             let start_x = (editor_camera.x / grid).floor() * grid - editor_camera.x;
             let start_y = (editor_camera.y / grid).floor() * grid - editor_camera.y;
 
@@ -953,28 +1492,6 @@ async fn main() {
 
             // Draw level entities from editor_level_data
             if let Some(ref data) = editor_level_data {
-                let draw_entity = |sprite_name: &str, x: f32, y: f32| {
-                    if let Some(sprite) = assets
-                        .sprite_by_kind_and_name(crate::assets::SpriteKind::Platform, sprite_name)
-                    {
-                        let tex = &sprite.texture;
-                        let dest_size =
-                            vec2(tex.width() * rules.sprite_scale, tex.height() * rules.sprite_scale);
-                        let sx = x - editor_camera.x - dest_size.x / 2.0;
-                        let sy = y - editor_camera.y - dest_size.y / 2.0;
-                        draw_texture_ex(
-                            tex,
-                            sx,
-                            sy,
-                            WHITE,
-                            DrawTextureParams {
-                                dest_size: Some(dest_size),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                };
-
                 // Platforms
                 for p in &data.platforms {
                     if let Some(sprite) = assets.sprite_by_kind_and_name(
@@ -1086,11 +1603,56 @@ async fn main() {
                 editor_level, tool_name, editor_preview_scale
             );
             draw_text(&hud, 16.0, 28.0, 30.0, YELLOW);
-            let hint = "Move: WASD/arrows  | Q/E: tool  | ,/. : sprite  | Mouse wheel: preview size  | Z/X: level  | LMB: place  | RMB: erase  | S: save  | Esc: back";
+            let hint = "Move: WASD/arrows  | Q/E: tool  | ,/. : sprite  | Mouse wheel: preview size  | Z/X: level  | LMB: place  | RMB: erase  | S: save  | Esc: back  | Clone: hold C + LMB";
             draw_text(hint, 16.0, 64.0, 20.0, GRAY);
 
+            let behavior_hint = format!(
+                "Behaviors [M/V/J]: PlatMove={} PlatVert={} EnemyJump={}",
+                if editor_platform_moving { "On" } else { "Off" },
+                if editor_platform_vertical { "On" } else { "Off" },
+                if editor_enemy_jumping { "On" } else { "Off" }
+            );
+            draw_text(&behavior_hint, 16.0, 88.0, 18.0, LIGHTGRAY);
+
+            // Assets button
+            let btn_x = 16.0;
+            let btn_y = 72.0;
+            let btn_w = 140.0;
+            let btn_h = 28.0;
+            let btn_color = if editor_show_assets { GREEN } else { DARKGRAY };
+            draw_rectangle_lines(btn_x, btn_y, btn_w, btn_h, 2.0, BLACK);
+            draw_rectangle(btn_x, btn_y, btn_w, btn_h, Color::new(0.1, 0.1, 0.1, 0.8));
+            draw_text(
+                "Assets",
+                btn_x + 12.0,
+                btn_y + 20.0,
+                20.0,
+                btn_color,
+            );
+
+            // Play From Here button
+            let play_btn_x = btn_x + btn_w + 12.0;
+            let play_btn_y = btn_y;
+            let play_btn_w = 180.0;
+            let play_btn_h = btn_h;
+            draw_rectangle_lines(play_btn_x, play_btn_y, play_btn_w, play_btn_h, 2.0, BLACK);
+            draw_rectangle(
+                play_btn_x,
+                play_btn_y,
+                play_btn_w,
+                play_btn_h,
+                Color::new(0.1, 0.1, 0.1, 0.8),
+            );
+            draw_text(
+                "Play From Here",
+                play_btn_x + 12.0,
+                play_btn_y + 20.0,
+                20.0,
+                GREEN,
+            );
+
             // Preview sprite under mouse
-            if let Some(ref data) = editor_level_data {
+            if editor_level_data.is_some() {
                 let mouse = mouse_position();
                 let preview_pos = vec2(mouse.0, mouse.1);
                 let color = match editor_tool_index {
@@ -1161,6 +1723,123 @@ async fn main() {
                     _ => {}
                 }
             }
+
+            // Assets overlay panel
+            if editor_show_assets {
+                let panel_w = 260.0;
+                let panel_h = 260.0;
+                let panel_x = screen_width() - panel_w - 16.0;
+                let panel_y = 96.0;
+                draw_rectangle(
+                    panel_x,
+                    panel_y,
+                    panel_w,
+                    panel_h,
+                    Color::new(0.02, 0.02, 0.02, 0.9),
+                );
+                draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 2.0, GRAY);
+
+                let title = match editor_tool_index {
+                    0 => "Player Sprites",
+                    1 => "Platform Sprites",
+                    2 => "Enemy Sprites",
+                    3 => "Collectible Sprites",
+                    _ => "Sprites",
+                };
+                draw_text(
+                    title,
+                    panel_x + 8.0,
+                    panel_y + 20.0,
+                    20.0,
+                    YELLOW,
+                );
+
+                let row_h = 22.0;
+                let mut y = panel_y + 40.0;
+                let max_rows = ((panel_h - 48.0) / row_h) as i32;
+
+                use crate::assets::SpriteKind;
+
+                let (list, current_index) = match editor_tool_index {
+                    0 => (
+                        assets.sprites_of_kind(SpriteKind::Player),
+                        editor_player_index,
+                    ),
+                    1 => (
+                        assets.sprites_of_kind(SpriteKind::Platform),
+                        editor_platform_index,
+                    ),
+                    2 => (
+                        assets.sprites_of_kind(SpriteKind::Enemy),
+                        editor_enemy_index,
+                    ),
+                    3 => (
+                        {
+                            let mut list = assets.sprites_of_kind(SpriteKind::Collectible);
+                            let mut goals =
+                                assets.sprites_of_kind(SpriteKind::GoalCollectible);
+                            list.append(&mut goals);
+                            list
+                        },
+                        editor_collectible_index,
+                    ),
+                    _ => (Vec::new(), 0),
+                };
+
+                let list_len = list.len() as i32;
+                if list_len > 0 && max_rows > 0 {
+                    let max_scroll = (list_len - max_rows).max(0);
+                    if editor_assets_scroll > max_scroll {
+                        editor_assets_scroll = max_scroll;
+                    }
+                    if editor_assets_scroll < 0 {
+                        editor_assets_scroll = 0;
+                    }
+
+                    let start = editor_assets_scroll;
+                    let mut row = 0;
+                    while row < max_rows {
+                        let idx = start + row;
+                        if idx >= list_len {
+                            break;
+                        }
+
+                        let sprite = list[idx as usize];
+                        let is_selected = idx == current_index;
+                        let row_color = if is_selected { GREEN } else { LIGHTGRAY };
+
+                        // Small thumbnail preview
+                        let tex = &sprite.texture;
+                        let thumb_h = row_h - 6.0;
+                        let thumb_w = thumb_h;
+                        let w = tex.width().max(1.0);
+                        let h = tex.height().max(1.0);
+                        let scale = (thumb_w / w).min(thumb_h / h);
+                        let dest_size = vec2(w * scale, h * scale);
+                        draw_texture_ex(
+                            tex,
+                            panel_x + 8.0,
+                            y - dest_size.y + 4.0,
+                            WHITE,
+                            DrawTextureParams {
+                                dest_size: Some(dest_size),
+                                ..Default::default()
+                            },
+                        );
+
+                        draw_text(
+                            &sprite.name,
+                            panel_x + 8.0 + thumb_w + 6.0,
+                            y,
+                            18.0,
+                            row_color,
+                        );
+
+                        y += row_h;
+                        row += 1;
+                    }
+                }
+            }
         } else {
             // Normal game rendering
             // World camera following the player horizontally and vertically
@@ -1204,6 +1883,27 @@ async fn main() {
             }
 
             set_default_camera();
+
+            // Screen-space vignette / lighting
+            if rules.vignette_enabled {
+                let sw = screen_width();
+                let sh = screen_height();
+                let margin = rules
+                    .vignette_margin
+                    .max(0.0)
+                    .min(sw.min(sh) * 0.5);
+                let alpha = rules.vignette_alpha.clamp(0.0, 1.0);
+                let color = Color::new(0.0, 0.0, 0.0, alpha);
+
+                // Top
+                draw_rectangle(0.0, 0.0, sw, margin, color);
+                // Bottom
+                draw_rectangle(0.0, sh - margin, sw, margin, color);
+                // Left
+                draw_rectangle(0.0, margin, margin, sh - 2.0 * margin, color);
+                // Right
+                draw_rectangle(sw - margin, margin, margin, sh - 2.0 * margin, color);
+            }
 
             let hud_text = format!(
                 "Level: {} | HP: {}/{} | Progress: {}/{}",
@@ -1453,6 +2153,51 @@ async fn main() {
                 draw_text(note, cx - 260.0, cy - 80.0, 18.0, ORANGE);
 
                 let mode_label = format!("Mode: {}", rules.mode);
+
+                // Derive human-friendly AI preset name from current rules
+                let ai_preset_name = match rules.enemy_behavior_mode.to_lowercase().as_str() {
+                    "patrol" => "Patrol",
+                    "chase" => "Chase",
+                    "circle" => "Circle",
+                    "mixed" => "Mixed",
+                    _ => "Custom",
+                };
+
+                // Derive human-friendly layout preset name from current rules
+                let layout_preset_name = {
+                    let w = rules.world_width_screens;
+                    let h = rules.world_height_screens;
+                    let pattern = rules.layout_pattern_mode.to_lowercase();
+                    let islands = rules.layout_islands_enabled;
+
+                    if (w - 2.0).abs() < 0.1
+                        && (h - 3.0).abs() < 0.1
+                        && pattern == "normal"
+                        && !islands
+                    {
+                        "Flat Small"
+                    } else if (w - 7.0).abs() < 0.1
+                        && (h - 14.0).abs() < 0.1
+                        && pattern == "normal"
+                        && !islands
+                    {
+                        "Flat Big"
+                    } else if (w - 7.0).abs() < 0.1
+                        && (h - 14.0).abs() < 0.1
+                        && (pattern == "stairs_up" || pattern == "stairsup")
+                        && !islands
+                    {
+                        "Stairs Big"
+                    } else if (w - 7.0).abs() < 0.1
+                        && (h - 14.0).abs() < 0.1
+                        && islands
+                    {
+                        "Islands Big"
+                    } else {
+                        "Custom"
+                    }
+                };
+
                 let items = [
                     mode_label,
                     format!("Collectibles/Level Up: {}", rules.collectibles_for_level_up),
@@ -1469,6 +2214,9 @@ async fn main() {
                         "Enemy Shooting: {}",
                         if rules.enemy_shoot_enabled { "On" } else { "Off" }
                     ),
+                    format!("Editor Grid Size: {:.0}", rules.editor.grid_size),
+                    format!("AI Preset: {}", ai_preset_name),
+                    format!("Layout Preset: {}", layout_preset_name),
                 ];
 
                 for (i, text) in items.iter().enumerate() {
@@ -1712,16 +2460,16 @@ fn make_scene(
     assets: &Assets,
     rules: &GameRules,
     level: u32,
-    rng: &mut StdRng,
+    base_seed: u64,
 ) -> Scene {
-    let screen_w = screen_width();
-    let screen_h = screen_height();
     let world_width_screens = rules.world_width_screens.max(1.0);
     let world_height_screens = rules.world_height_screens.max(1.0);
+    let screen_w = screen_width();
+    let screen_h = screen_height();
     let world_w = screen_w * world_width_screens;
     let world_h = screen_h * world_height_screens;
     let screen_size = vec2(world_w, world_h);
-    generate_scene(assets, rules, level, screen_size, rng)
+    crate::generator::generate_scene_for_seed(assets, rules, level, screen_size, base_seed)
 }
 
 fn remove_nearest_in_level(

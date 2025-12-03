@@ -84,8 +84,8 @@
   "min_collectibles_level_scale": 0.0,
   "max_collectibles_level_scale": 0.0,
   "custom_level_folder": "assets/config/levels",
-  "world_width_screens": 2.0,
-  "world_height_screens": 3.0,
+  "world_width_screens": 7.0,
+  "world_height_screens": 14.0,
   "platform_density_bottom": 1.5,
   "platform_density_top": 0.5,
   "moving_platform_enabled": false,
@@ -113,9 +113,22 @@
   "jump_particle_count": 10,
   "hit_particle_count": 18,
   "pickup_particle_count": 12,
+  "layout_pattern_mode": "auto",
+  "layout_stair_step": 32.0,
+  "layout_islands_enabled": true,
+  "layout_islands_count": 2,
+  "layout_islands_span": 0.4,
+  "enemy_behavior_mode": "patrol",
+  "enemy_chase_range": 320.0,
+  "enemy_circle_radius": 40.0,
+  "enemy_circle_speed": 1.2,
+  "vignette_enabled": false,
+  "vignette_margin": 160.0,
+  "vignette_alpha": 0.6,
   "editor": {
     "default_platform_moving": false,
     "default_platform_vertical": false,
-    "default_enemy_jumping": false
+    "default_enemy_jumping": false,
+    "grid_size": 64.0
   }
 }

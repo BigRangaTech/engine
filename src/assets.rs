@@ -19,6 +19,7 @@ pub struct SpriteAsset {
     pub kind: SpriteKind,
 }
 
+#[derive(Clone)]
 pub struct Assets {
     pub sprites: Vec<SpriteAsset>,
 }

@@ -99,6 +99,10 @@ pub struct Scene {
     pub hit_particle_count: u32,
     pub pickup_particle_count: u32,
     pub particles: Vec<Particle>,
+    pub enemy_behavior_mode: String,
+    pub enemy_chase_range: f32,
+    pub enemy_circle_radius: f32,
+    pub enemy_circle_speed: f32,
 }
 
 impl Scene {
@@ -140,6 +144,10 @@ impl Scene {
         jump_particle_count: u32,
         hit_particle_count: u32,
         pickup_particle_count: u32,
+        enemy_behavior_mode: String,
+        enemy_chase_range: f32,
+        enemy_circle_radius: f32,
+        enemy_circle_speed: f32,
     ) -> Self {
         let clamped_max = player_max_health.max(1);
         let clamped_start = player_start_health.max(1).min(clamped_max);
@@ -192,6 +200,10 @@ impl Scene {
             hit_particle_count,
             pickup_particle_count,
             particles: Vec::new(),
+            enemy_behavior_mode,
+            enemy_chase_range,
+            enemy_circle_radius,
+            enemy_circle_speed,
         }
     }
 
@@ -326,13 +338,43 @@ impl Scene {
                 }
                 EntityKind::Enemy => {
                     entity.velocity.y += self.gravity * self.enemy_gravity_scale * dt;
-                    entity.position += entity.velocity * dt;
+
+                    // Horizontal behavior: patrol / chase / circle
+                    match self.enemy_behavior_mode.to_lowercase().as_str() {
+                        "chase" => {
+                            if let Some(player_pos) = player_pos {
+                                let dx = player_pos.x - entity.position.x;
+                                if dx.abs() <= self.enemy_chase_range {
+                                    let dir = if dx > 0.0 { 1.0 } else { -1.0 };
+                                    entity.velocity.x = dir * self.enemy_speed;
+                                }
+                            }
+                        }
+                        "circle" => {
+                            // Simple circular motion around base_position
+                            let angle = self.time * self.enemy_circle_speed + entity.phase;
+                            let r = self.enemy_circle_radius;
+                            entity.position.x =
+                                entity.base_position.x + angle.cos() * r;
+                            entity.position.y =
+                                entity.base_position.y + angle.sin() * r;
+                        }
+                        _ => {
+                            // "patrol" or unknown: current velocity.x is used
+                        }
+                    }
+
+                    if !matches!(self.enemy_behavior_mode.to_lowercase().as_str(), "circle") {
+                        entity.position += entity.velocity * dt;
+                    }
 
                     resolve_platform_collisions(entity, platforms, self.sprite_scale);
 
                     let half_w = entity.texture.width() * self.sprite_scale / 2.0;
                     if entity.position.x - half_w < 0.0 || entity.position.x + half_w > self.world_width {
-                        entity.velocity.x = -entity.velocity.x;
+                        if !matches!(self.enemy_behavior_mode.to_lowercase().as_str(), "circle") {
+                            entity.velocity.x = -entity.velocity.x;
+                        }
                     }
 
                     if self.enemy_jump_enabled

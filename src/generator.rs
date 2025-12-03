@@ -2,6 +2,8 @@ use crate::assets::{Assets, SpriteKind};
 use crate::scene::{Entity, EntityKind, Platform, Scene, InputConfig};
 use macroquad::prelude::*;
 use ::rand::Rng;
+use ::rand::rngs::StdRng;
+use ::rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -122,6 +124,18 @@ pub struct GameRules {
     pub jump_particle_count: u32,
     pub hit_particle_count: u32,
     pub pickup_particle_count: u32,
+    pub layout_pattern_mode: String,
+    pub layout_stair_step: f32,
+    pub layout_islands_enabled: bool,
+    pub layout_islands_count: usize,
+    pub layout_islands_span: f32,
+    pub enemy_behavior_mode: String,
+    pub enemy_chase_range: f32,
+    pub enemy_circle_radius: f32,
+    pub enemy_circle_speed: f32,
+    pub vignette_enabled: bool,
+    pub vignette_margin: f32,
+    pub vignette_alpha: f32,
     pub editor: EditorOptions,
 }
 
@@ -131,6 +145,7 @@ pub struct EditorOptions {
     pub default_platform_moving: bool,
     pub default_platform_vertical: bool,
     pub default_enemy_jumping: bool,
+    pub grid_size: f32,
 }
 
 impl Default for EditorOptions {
@@ -139,6 +154,7 @@ impl Default for EditorOptions {
             default_platform_moving: false,
             default_platform_vertical: false,
             default_enemy_jumping: false,
+            grid_size: 64.0,
         }
     }
 }
@@ -231,8 +247,8 @@ impl Default for GameRules {
             min_collectibles_level_scale: 0.0,
             max_collectibles_level_scale: 0.0,
             custom_level_folder: "assets/config/levels".to_string(),
-            world_width_screens: 2.0,
-            world_height_screens: 3.0,
+            world_width_screens: 7.0,
+            world_height_screens: 14.0,
             platform_density_bottom: 1.5,
             platform_density_top: 0.5,
             moving_platform_enabled: false,
@@ -260,6 +276,18 @@ impl Default for GameRules {
             jump_particle_count: 10,
             hit_particle_count: 18,
             pickup_particle_count: 12,
+            layout_pattern_mode: "auto".to_string(),
+            layout_stair_step: 32.0,
+            layout_islands_enabled: false,
+            layout_islands_count: 2,
+            layout_islands_span: 0.4,
+            enemy_behavior_mode: "patrol".to_string(),
+            enemy_chase_range: 320.0,
+            enemy_circle_radius: 40.0,
+            enemy_circle_speed: 1.2,
+            vignette_enabled: false,
+            vignette_margin: 160.0,
+            vignette_alpha: 0.6,
             editor: EditorOptions::default(),
         }
     }
@@ -364,6 +392,53 @@ pub fn generate_scene(
             (base as f32 * enemy_damage_mult).round().max(1.0) as u32;
         scaled
     };
+    #[derive(Copy, Clone)]
+    enum LayoutPattern {
+        Normal,
+        StairsUp,
+        StairsDown,
+    }
+
+    let layout_pattern = {
+        let mode = rules.layout_pattern_mode.to_lowercase();
+        match mode.as_str() {
+            "normal" => LayoutPattern::Normal,
+            "stairs_up" | "stairsup" => LayoutPattern::StairsUp,
+            "stairs_down" | "stairsdown" => LayoutPattern::StairsDown,
+            "auto" | _ => {
+                let r: f32 = rng.gen();
+                if r < 0.34 {
+                    LayoutPattern::Normal
+                } else if r < 0.67 {
+                    LayoutPattern::StairsUp
+                } else {
+                    LayoutPattern::StairsDown
+                }
+            }
+        }
+    };
+
+    let islands_enabled = rules.layout_islands_enabled;
+    let islands_count = rules.layout_islands_count.max(1);
+    let islands_span = rules.layout_islands_span.clamp(0.1, 1.0);
+
+    // Effective enemy behavior mode (supports "mixed" as random per level)
+    let enemy_behavior_mode = {
+        let m = rules.enemy_behavior_mode.to_lowercase();
+        if m == "mixed" {
+            let r: f32 = rng.gen();
+            if r < 0.34 {
+                "patrol".to_string()
+            } else if r < 0.67 {
+                "chase".to_string()
+            } else {
+                "circle".to_string()
+            }
+        } else {
+            rules.enemy_behavior_mode.clone()
+        }
+    };
+
     let mut scene = Scene::new(
         rules.player_move_speed,
         rules.player_jump_strength,
@@ -402,6 +477,10 @@ pub fn generate_scene(
         rules.jump_particle_count,
         rules.hit_particle_count,
         rules.pickup_particle_count,
+        enemy_behavior_mode,
+        rules.enemy_chase_range,
+        rules.enemy_circle_radius,
+        rules.enemy_circle_speed,
     );
 
     // Background
@@ -437,6 +516,7 @@ pub fn generate_scene(
                 row as f32 / (rows.saturating_sub(1) as f32)
             };
             let y = max_y - t * height_span;
+            let mut current_y = y;
 
             let max_by_gap = if rules.platform_min_gap_x > 0.0 {
                 (screen_size.x / rules.platform_min_gap_x).max(1.0) as usize
@@ -458,6 +538,15 @@ pub fn generate_scene(
 
             let count = rng.gen_range(min_for_row..=max_for_row);
 
+            // Optional "islands" pattern: pick a few horizontal clusters where x positions are biased.
+            let mut island_centers: Vec<f32> = Vec::new();
+            if islands_enabled {
+                for _ in 0..islands_count {
+                    let cx = rng.gen_range(0.1 * screen_size.x..0.9 * screen_size.x);
+                    island_centers.push(cx);
+                }
+            }
+
             for _ in 0..count {
                 if let Some(sprite) = choose_random(&platform_sprites, rng) {
                     let tex_w = sprite.texture.width() * rules.sprite_scale;
@@ -465,12 +554,46 @@ pub fn generate_scene(
                         continue;
                     }
                     let margin = tex_w / 2.0;
-                    let x = rng.gen_range(margin..(screen_size.x - margin));
+                    let base_min_x = margin;
+                    let base_max_x = screen_size.x - margin;
+                    if base_min_x >= base_max_x {
+                        continue;
+                    }
+
+                    let x = if islands_enabled && !island_centers.is_empty() {
+                        let center = island_centers[rng.gen_range(0..island_centers.len())];
+                        let half_width = islands_span * screen_size.x * 0.5;
+                        let min_x = (center - half_width).max(base_min_x);
+                        let max_x = (center + half_width).min(base_max_x);
+                        if min_x >= max_x {
+                            rng.gen_range(base_min_x..base_max_x)
+                        } else {
+                            rng.gen_range(min_x..max_x)
+                        }
+                    } else {
+                        rng.gen_range(base_min_x..base_max_x)
+                    };
+
+                    let platform_y = match layout_pattern {
+                        LayoutPattern::Normal => y,
+                        LayoutPattern::StairsUp => {
+                            let py = current_y;
+                            current_y = (current_y - rules.layout_stair_step)
+                                .max(min_y);
+                            py
+                        }
+                        LayoutPattern::StairsDown => {
+                            let py = current_y;
+                            current_y = (current_y + rules.layout_stair_step)
+                                .min(max_y);
+                            py
+                        }
+                    };
 
                     scene.platforms.push(Platform {
                         texture: sprite.texture.clone(),
-                        position: vec2(x, y),
-                        base_position: vec2(x, y),
+                        position: vec2(x, platform_y),
+                        base_position: vec2(x, platform_y),
                         phase: rng.gen_range(0.0..std::f32::consts::TAU),
                         moving: rules.moving_platform_enabled,
                         vertical: rules.moving_platform_vertical,
@@ -588,6 +711,18 @@ pub fn generate_scene(
     );
 
     scene
+}
+
+pub fn generate_scene_for_seed(
+    assets: &Assets,
+    rules: &GameRules,
+    level: u32,
+    screen_size: Vec2,
+    base_seed: u64,
+) -> Scene {
+    let level_seed = level_seed_from_base(base_seed, level);
+    let mut rng = StdRng::seed_from_u64(level_seed);
+    generate_scene(assets, rules, level, screen_size, &mut rng)
 }
 
 pub fn spawn_collectibles(
@@ -727,6 +862,11 @@ fn choose_random<'a, T>(items: &'a [&T], rng: &mut impl Rng) -> Option<&'a T> {
     }
 }
 
+fn level_seed_from_base(base_seed: u64, level: u32) -> u64 {
+    const MIX: u64 = 0x9E3779B97F4A7C15;
+    base_seed ^ MIX.wrapping_mul(level as u64 + 1)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomLevelEntity {
     pub sprite: String,
@@ -753,6 +893,14 @@ pub struct CustomLevelCollectible {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomLevel {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub gravity_scale: Option<f32>,
+    #[serde(default)]
+    pub enemy_speed_scale: Option<f32>,
     #[serde(default)]
     pub player_start: Option<CustomLevelEntity>,
     #[serde(default)]
@@ -831,11 +979,55 @@ fn apply_custom_level_def(
     rules: &GameRules,
     def: &CustomLevel,
 ) -> bool {
+    // Optional per-level background override
+    if let Some(bg_name) = def.background.as_ref() {
+        let sprite = assets
+            .sprite_by_kind_and_name(SpriteKind::Background, bg_name)
+            .or_else(|| {
+                assets
+                    .sprites_of_kind(SpriteKind::Background)
+                    .get(0)
+                    .copied()
+            });
+        if let Some(s) = sprite {
+            scene.background = Some(s.texture.clone());
+        } else {
+            eprintln!(
+                "Custom level: no background sprite found for '{}'",
+                bg_name
+            );
+        }
+    }
+
+    // Optional per-level tuning for gravity / enemy speed
+    if let Some(scale) = def.gravity_scale {
+        if scale > 0.0 {
+            scene.gravity *= scale;
+        }
+    }
+    if let Some(scale) = def.enemy_speed_scale {
+        if scale > 0.0 {
+            scene.enemy_speed *= scale;
+        }
+    }
+
     // Player
-    let player_sprite = assets
-        .sprites_of_kind(SpriteKind::Player)
-        .get(0)
-        .map(|s| *s);
+    let player_sprite = if let Some(start) = def.player_start.as_ref() {
+        assets
+            .sprite_by_kind_and_name(SpriteKind::Player, &start.sprite)
+            .or_else(|| {
+                assets
+                    .sprites_of_kind(SpriteKind::Player)
+                    .get(0)
+                    .copied()
+            })
+    } else {
+        assets
+            .sprites_of_kind(SpriteKind::Player)
+            .get(0)
+            .copied()
+    };
+
     if let Some(base_sprite) = player_sprite {
         let (px, py) = if let Some(start) = def.player_start.as_ref() {
             (start.x, start.y)
@@ -921,7 +1113,17 @@ fn apply_custom_level_def(
             .sprite_by_kind_and_name(SpriteKind::Collectible, &c.sprite)
             .or_else(|| {
                 assets
+                    .sprite_by_kind_and_name(SpriteKind::GoalCollectible, &c.sprite)
+            })
+            .or_else(|| {
+                assets
                     .sprites_of_kind(SpriteKind::Collectible)
+                    .get(0)
+                    .copied()
+            })
+            .or_else(|| {
+                assets
+                    .sprites_of_kind(SpriteKind::GoalCollectible)
                     .get(0)
                     .copied()
             });

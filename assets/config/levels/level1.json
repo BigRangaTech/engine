@@ -1,4 +1,8 @@
 {
+  "name": null,
+  "background": null,
+  "gravity_scale": null,
+  "enemy_speed_scale": null,
   "player_start": {
     "sprite": "player_green",
     "x": 200.0,

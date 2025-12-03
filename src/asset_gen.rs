@@ -2,10 +2,11 @@ use image::{ImageBuffer, Rgba};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ::rand::SeedableRng;
 use ::rand::rngs::StdRng;
 use ::rand::Rng;
+use ::rand::SeedableRng;
 use std::f32::consts::PI;
+use std::thread;
 
 use crate::generator::GameRules;
 
@@ -36,89 +37,147 @@ pub fn generate_placeholder_assets(
     let bg_width = rules.background_width.max(16);
     let bg_height = rules.background_height.max(16);
 
+    // Pre-roll colors on the main thread for deterministic output, then
+    // fan out the actual image encoding work across threads.
+    struct SolidTask {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        color: [u8; 4],
+    }
+
+    struct GradientTask {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        top: [u8; 4],
+        bottom: [u8; 4],
+    }
+
+    let mut solid_tasks: Vec<SolidTask> = Vec::new();
+    let mut gradient_tasks: Vec<GradientTask> = Vec::new();
+
     // Players
-    save_solid_sprite(
-        base.join("sprites/player/player_1.png"),
-        player_size,
-        player_size,
-        random_color(&mut rng, palettes.player_primary, 60),
-    )?;
-    save_solid_sprite(
-        base.join("sprites/player/player_2.png"),
-        player_size,
-        player_size,
-        random_color(&mut rng, palettes.player_secondary, 60),
-    )?;
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/player/player_1.png"),
+        width: player_size,
+        height: player_size,
+        color: random_color(&mut rng, palettes.player_primary, 60),
+    });
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/player/player_2.png"),
+        width: player_size,
+        height: player_size,
+        color: random_color(&mut rng, palettes.player_secondary, 60),
+    });
 
     // Enemies
-    save_solid_sprite(
-        base.join("sprites/enemies/enemy_1.png"),
-        enemy_size,
-        enemy_size,
-        random_color(&mut rng, palettes.enemy_primary, 50),
-    )?;
-    save_solid_sprite(
-        base.join("sprites/enemies/enemy_2.png"),
-        enemy_size,
-        enemy_size,
-        random_color(&mut rng, palettes.enemy_secondary, 50),
-    )?;
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/enemies/enemy_1.png"),
+        width: enemy_size,
+        height: enemy_size,
+        color: random_color(&mut rng, palettes.enemy_primary, 50),
+    });
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/enemies/enemy_2.png"),
+        width: enemy_size,
+        height: enemy_size,
+        color: random_color(&mut rng, palettes.enemy_secondary, 50),
+    });
 
     // Collectibles
-    save_solid_sprite(
-        base.join("sprites/collectibles/collectible_1.png"),
-        collectible_size,
-        collectible_size,
-        random_color(&mut rng, palettes.collectible_primary, 40),
-    )?;
-    save_solid_sprite(
-        base.join("sprites/collectibles/collectible_2.png"),
-        collectible_size,
-        collectible_size,
-        random_color(&mut rng, palettes.collectible_secondary, 40),
-    )?;
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/collectibles/collectible_1.png"),
+        width: collectible_size,
+        height: collectible_size,
+        color: random_color(&mut rng, palettes.collectible_primary, 40),
+    });
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/collectibles/collectible_2.png"),
+        width: collectible_size,
+        height: collectible_size,
+        color: random_color(&mut rng, palettes.collectible_secondary, 40),
+    });
 
     // Goal collectibles (for win condition)
-    save_solid_sprite(
-        base.join("sprites/goals/goal_1.png"),
-        goal_size,
-        goal_size,
-        random_color(&mut rng, palettes.goal_primary, 40),
-    )?;
-    save_solid_sprite(
-        base.join("sprites/goals/goal_2.png"),
-        goal_size,
-        goal_size,
-        random_color(&mut rng, palettes.goal_secondary, 40),
-    )?;
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/goals/goal_1.png"),
+        width: goal_size,
+        height: goal_size,
+        color: random_color(&mut rng, palettes.goal_primary, 40),
+    });
+    solid_tasks.push(SolidTask {
+        path: base.join("sprites/goals/goal_2.png"),
+        width: goal_size,
+        height: goal_size,
+        color: random_color(&mut rng, palettes.goal_secondary, 40),
+    });
 
     // Platforms
-    save_solid_sprite(
-        base.join("tiles/platforms/platform_1.png"),
-        platform_width,
-        platform_height,
-        random_color(&mut rng, palettes.platform_primary, 40),
-    )?;
-    save_solid_sprite(
-        base.join("tiles/platforms/platform_2.png"),
-        platform_width,
-        platform_height,
-        random_color(&mut rng, palettes.platform_secondary, 40),
-    )?;
+    solid_tasks.push(SolidTask {
+        path: base.join("tiles/platforms/platform_1.png"),
+        width: platform_width,
+        height: platform_height,
+        color: random_color(&mut rng, palettes.platform_primary, 40),
+    });
+    solid_tasks.push(SolidTask {
+        path: base.join("tiles/platforms/platform_2.png"),
+        width: platform_width,
+        height: platform_height,
+        color: random_color(&mut rng, palettes.platform_secondary, 40),
+    });
 
-    // Backgrounds
+    // Backgrounds (gradient)
     let bg_count = rules.background_variants.max(1);
     for i in 0..bg_count {
         let top = random_color(&mut rng, palettes.bg_top, 30);
         let bottom = random_color(&mut rng, palettes.bg_bottom, 30);
         let filename = format!("backgrounds/bg_{}.png", i + 1);
-        save_vertical_gradient(
-            base.join(filename),
-            bg_width,
-            bg_height,
+        gradient_tasks.push(GradientTask {
+            path: base.join(filename),
+            width: bg_width,
+            height: bg_height,
             top,
             bottom,
-        )?;
+        });
+    }
+
+    // Run solid sprite tasks in parallel.
+    let mut handles = Vec::new();
+    for task in solid_tasks {
+        handles.push(thread::spawn(move || {
+            save_solid_sprite(task.path, task.width, task.height, task.color)
+        }));
+    }
+    for handle in handles {
+        let res = handle
+            .join()
+            .map_err(|_| "Sprite generation thread panicked".to_string())?;
+        if let Err(e) = res {
+            return Err(e);
+        }
+    }
+
+    // Run gradient background tasks in parallel.
+    let mut bg_handles = Vec::new();
+    for task in gradient_tasks {
+        bg_handles.push(thread::spawn(move || {
+            save_vertical_gradient(
+                task.path,
+                task.width,
+                task.height,
+                task.top,
+                task.bottom,
+            )
+        }));
+    }
+    for handle in bg_handles {
+        let res = handle
+            .join()
+            .map_err(|_| "Background generation thread panicked".to_string())?;
+        if let Err(e) = res {
+            return Err(e);
+        }
     }
 
     generate_placeholder_sounds(&base.join("sounds"), rules)?;
@@ -186,32 +245,46 @@ fn generate_placeholder_sounds(dir: &Path, rules: &GameRules) -> Result<(), Stri
     let pickup_path = dir.join("pickup.wav");
     let music_path = dir.join("music.wav");
 
-    write_tone(
-        &jump_path,
-        rules.jump_sound_freq,
-        rules.jump_sound_duration,
-        0.6,
-    )?;
-    write_tone(
-        &hit_path,
-        rules.hit_sound_freq,
-        rules.hit_sound_duration,
-        0.7,
-    )?;
-    write_tone_glissando(
-        &pickup_path,
-        rules.pickup_sound_start_freq,
-        rules.pickup_sound_end_freq,
-        rules.pickup_sound_duration,
-        0.6,
-    )?;
-    write_tone_glissando(
-        &music_path,
-        rules.music_sound_start_freq,
-        rules.music_sound_end_freq,
-        rules.music_sound_duration,
-        0.3,
-    )?;
+    let jump_freq = rules.jump_sound_freq;
+    let jump_dur = rules.jump_sound_duration;
+    let hit_freq = rules.hit_sound_freq;
+    let hit_dur = rules.hit_sound_duration;
+    let pickup_start = rules.pickup_sound_start_freq;
+    let pickup_end = rules.pickup_sound_end_freq;
+    let pickup_dur = rules.pickup_sound_duration;
+    let music_start = rules.music_sound_start_freq;
+    let music_end = rules.music_sound_end_freq;
+    let music_dur = rules.music_sound_duration;
+
+    let h_jump = thread::spawn(move || write_tone(&jump_path, jump_freq, jump_dur, 0.6));
+    let h_hit = thread::spawn(move || write_tone(&hit_path, hit_freq, hit_dur, 0.7));
+    let h_pickup = thread::spawn(move || {
+        write_tone_glissando(
+            &pickup_path,
+            pickup_start,
+            pickup_end,
+            pickup_dur,
+            0.6,
+        )
+    });
+    let h_music = thread::spawn(move || {
+        write_tone_glissando(
+            &music_path,
+            music_start,
+            music_end,
+            music_dur,
+            0.3,
+        )
+    });
+
+    for handle in [h_jump, h_hit, h_pickup, h_music] {
+        let res = handle
+            .join()
+            .map_err(|_| "Sound generation thread panicked".to_string())?;
+        if let Err(e) = res {
+            return Err(e);
+        }
+    }
 
     Ok(())
 }
