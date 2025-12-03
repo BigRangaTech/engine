@@ -1,0 +1,21 @@
+{
+  "player_start": {
+    "sprite": "player_green",
+    "x": 200.0,
+    "y": 200.0
+  },
+  "platforms": [
+    { "sprite": "platform_brown", "x": 200.0, "y": 260.0 },
+    { "sprite": "platform_gray", "x": 400.0, "y": 320.0 },
+    { "sprite": "platform_gray", "x": 600.0, "y": 380.0 }
+  ],
+  "enemies": [
+    { "sprite": "enemy_red", "x": 420.0, "y": 260.0 },
+    { "sprite": "enemy_purple", "x": 620.0, "y": 320.0 }
+  ],
+  "collectibles": [
+    { "sprite": "collectible_1", "x": 200.0, "y": 220.0, "value": 5, "health": 0 },
+    { "sprite": "collectible_2", "x": 400.0, "y": 280.0, "value": 1, "health": 1 },
+    { "sprite": "collectible_1", "x": 600.0, "y": 340.0, "value": 1, "health": 0 }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "player_start": {
+    "sprite": "player_blue",
+    "x": 160.0,
+    "y": 160.0
+  },
+  "platforms": [
+    { "sprite": "platform_brown", "x": 160.0, "y": 220.0 },
+    { "sprite": "platform_gray",  "x": 360.0, "y": 260.0 },
+    { "sprite": "platform_brown", "x": 560.0, "y": 300.0 },
+    { "sprite": "platform_gray",  "x": 760.0, "y": 340.0 },
+
+    { "sprite": "platform_brown", "x": 260.0, "y": 420.0 },
+    { "sprite": "platform_gray",  "x": 460.0, "y": 460.0 },
+    { "sprite": "platform_brown", "x": 660.0, "y": 500.0 }
+  ],
+  "enemies": [
+    { "sprite": "enemy_red",    "x": 360.0, "y": 230.0 },
+    { "sprite": "enemy_purple", "x": 560.0, "y": 270.0 },
+    { "sprite": "enemy_1",      "x": 460.0, "y": 430.0 }
+  ],
+  "collectibles": [
+    { "sprite": "collectible_1", "x": 160.0, "y": 190.0, "value": 1, "health": 0 },
+    { "sprite": "collectible_2", "x": 360.0, "y": 230.0, "value": 2, "health": 1 },
+    { "sprite": "collectible_1", "x": 560.0, "y": 270.0, "value": 1, "health": 0 },
+    { "sprite": "collectible_2", "x": 260.0, "y": 390.0, "value": 3, "health": 0 },
+    { "sprite": "collectible_1", "x": 660.0, "y": 470.0, "value": 1, "health": 1 }
+  ]
+}

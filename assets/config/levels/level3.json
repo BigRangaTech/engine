@@ -1,0 +1,29 @@
+{
+  "player_start": {
+    "sprite": "player_kenney",
+    "x": 120.0,
+    "y": 140.0
+  },
+  "platforms": [
+    { "sprite": "platform_grass_mid", "x": 120.0, "y": 200.0 },
+    { "sprite": "platform_grass_mid", "x": 320.0, "y": 260.0 },
+    { "sprite": "platform_grass_mid", "x": 520.0, "y": 320.0 },
+    { "sprite": "platform_grass_mid", "x": 720.0, "y": 380.0 },
+
+    { "sprite": "platform_grass_mid", "x": 220.0, "y": 460.0 },
+    { "sprite": "platform_grass_mid", "x": 420.0, "y": 520.0 },
+    { "sprite": "platform_grass_mid", "x": 620.0, "y": 580.0 }
+  ],
+  "enemies": [
+    { "sprite": "enemy_slime", "x": 320.0, "y": 230.0 },
+    { "sprite": "enemy_slime", "x": 520.0, "y": 290.0 },
+    { "sprite": "enemy_slime", "x": 420.0, "y": 490.0 }
+  ],
+  "collectibles": [
+    { "sprite": "collectible_gem_blue", "x": 120.0, "y": 170.0, "value": 3, "health": 0 },
+    { "sprite": "collectible_gem_red",  "x": 320.0, "y": 230.0, "value": 5, "health": 1 },
+    { "sprite": "collectible_gem_blue", "x": 520.0, "y": 290.0, "value": 3, "health": 0 },
+    { "sprite": "collectible_gem_red",  "x": 220.0, "y": 430.0, "value": 5, "health": 0 },
+    { "sprite": "collectible_gem_blue", "x": 620.0, "y": 550.0, "value": 3, "health": 1 }
+  ]
+}
